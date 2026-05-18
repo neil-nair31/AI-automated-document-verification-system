@@ -1,0 +1,35 @@
+# --- Web framework ---
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+python-multipart==0.0.20
+
+# --- Persistence ---
+SQLAlchemy==2.0.36
+alembic==1.14.0
+psycopg2-binary==2.9.10
+
+# --- Config / validation ---
+pydantic==2.10.3
+pydantic-settings==2.7.0
+python-dotenv==1.0.1
+
+# --- Auth ---
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+
+# --- Pipeline stage deps (used once we implement the engine) ---
+# Pulled in now so the docker image rebuild after the pipeline phase is small.
+PyMuPDF==1.25.1            # born-digital PDF text extraction (lightweight)
+Pillow==11.0.0
+python-dateutil==2.9.0.post0
+
+# NOTE: PaddleOCR is intentionally NOT pinned here. It is a ~1GB install and
+# pulls in heavy native deps. It will be added behind an optional extras file
+# (requirements-ocr.txt) during the pipeline phase so the base image stays slim
+# and developers can opt-in.
+
+# --- Tests ---
+pytest==8.3.4
+pytest-asyncio==0.25.0
+httpx==0.28.1
