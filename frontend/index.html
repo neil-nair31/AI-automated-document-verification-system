@@ -231,25 +231,456 @@
   </main>
 
   <!-- ============================================================
-       View: Result placeholder (#result/{id})
-       Full result UI is tomorrow's work; today we just hand the ID off.
+       View: Result (#result/{id})
+
+       STEP-1 NOTE: contents hardcoded to the REVIEW fixture (the
+       Nelz/Neil name-mismatch case from mockData.js) so the layout
+       can be reviewed before the renderer is wired. Step 2 replaces
+       the inner markup with a renderResultView() call.
        ============================================================ -->
   <main class="view view--result" id="view-result" hidden>
-    <div class="page">
-      <header class="page__head">
-        <h1 class="page__title">Verification result</h1>
-        <p class="page__lede">
-          Verification ID:
-          <code class="result-id" id="result-id">&mdash;</code>
-        </p>
+    <div class="page page--wide">
+
+      <!-- Header strip ------------------------------------------- -->
+      <header class="result-header">
+        <div class="result-header__meta">
+          <div class="result-header__title-row">
+            <h1 class="result-header__title">Verification result</h1>
+            <code class="result-id" id="result-id">ver_2026_05_25_002</code>
+          </div>
+          <dl class="result-header__details">
+            <div class="result-header__field">
+              <dt>Submitted by</dt>
+              <dd>Sam Operator <span class="result-header__email">operator@rts.com</span></dd>
+            </div>
+            <div class="result-header__field">
+              <dt>Country</dt>
+              <dd>USA</dd>
+            </div>
+            <div class="result-header__field">
+              <dt>Submitted</dt>
+              <dd>25 May 2026, 10:02</dd>
+            </div>
+          </dl>
+        </div>
+        <a class="btn btn--secondary" href="#upload">New verification</a>
       </header>
-      <div class="card card--placeholder">
-        <p class="card__placeholder-title">Result view renders here tomorrow.</p>
-        <p class="card__lede">
-          Today's hand-off ends at storing the verification ID in
-          <code>appState.currentVerificationId</code> and surfacing it in the URL hash.
-        </p>
-      </div>
+
+      <!-- Verdict summary panel ---------------------------------- -->
+      <section class="verdict-panel verdict-panel--review" aria-label="Verdict summary">
+        <div class="verdict-panel__col verdict-panel__col--badge">
+          <span class="verdict-badge verdict-badge--review">REVIEW</span>
+        </div>
+        <div class="verdict-panel__col verdict-panel__col--score">
+          <span class="verdict-score verdict-score--review">52</span>
+          <span class="verdict-score__label">Risk Score</span>
+          <span class="verdict-score__scale">out of 100</span>
+        </div>
+        <div class="verdict-panel__col verdict-panel__col--escalation">
+          <span class="escalation__label">Manual review</span>
+          <span class="escalation__desc">Routed to reviewer for human validation.</span>
+        </div>
+      </section>
+
+      <!-- Pipeline progress strip -------------------------------- -->
+      <section class="pipeline-strip" aria-label="Pipeline progress">
+        <div class="pipeline-step pipeline-step--pass">
+          <span class="pipeline-step__icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="20" height="20">
+              <circle cx="8" cy="8" r="7.5" fill="#1E8E5C"/>
+              <path d="M4.2 8.4 L6.8 11 L11.8 5.6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
+          <span class="pipeline-step__label">Document Processing</span>
+          <span class="pipeline-step__sub">10/10 checks passed</span>
+        </div>
+        <div class="pipeline-step__connector pipeline-step__connector--fail" aria-hidden="true"></div>
+        <div class="pipeline-step pipeline-step--fail">
+          <span class="pipeline-step__icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="20" height="20">
+              <path d="M8 1 L15 14 L1 14 Z" fill="#D99A23"/>
+              <path d="M8 5.5 L8 9.5" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round"/>
+              <circle cx="8" cy="11.8" r="0.9" fill="#FFFFFF"/>
+            </svg>
+          </span>
+          <span class="pipeline-step__label">Cross-Document Corroboration</span>
+          <span class="pipeline-step__sub">1 of 3 checks failed</span>
+        </div>
+        <div class="pipeline-step__connector" aria-hidden="true"></div>
+        <div class="pipeline-step pipeline-step--pass">
+          <span class="pipeline-step__icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="20" height="20">
+              <circle cx="8" cy="8" r="7.5" fill="#1E8E5C"/>
+              <path d="M4.2 8.4 L6.8 11 L11.8 5.6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
+          <span class="pipeline-step__label">External Source Corroboration</span>
+          <span class="pipeline-step__sub">2/2 checks passed</span>
+        </div>
+        <div class="pipeline-step__connector" aria-hidden="true"></div>
+        <div class="pipeline-step pipeline-step--pass">
+          <span class="pipeline-step__icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="20" height="20">
+              <circle cx="8" cy="8" r="7.5" fill="#1E8E5C"/>
+              <path d="M4.2 8.4 L6.8 11 L11.8 5.6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
+          <span class="pipeline-step__label">Risk-Based Verdicting</span>
+          <span class="pipeline-step__sub">Aggregate within REVIEW band</span>
+        </div>
+      </section>
+
+      <!-- Per-document cards ------------------------------------- -->
+      <section class="documents-section" aria-label="Documents">
+        <h2 class="section-title">Documents</h2>
+
+        <!-- Passport -->
+        <article class="doc-card">
+          <header class="doc-card__head">
+            <h3 class="doc-card__type">Passport</h3>
+            <code class="doc-card__filename">nelz_kumar_passport.pdf</code>
+          </header>
+          <div class="doc-card__body">
+            <div class="doc-card__panel">
+              <h4 class="doc-card__subtitle">Extracted fields</h4>
+              <dl class="kv-list">
+                <div class="kv-item"><dt>First Name</dt><dd>Nelz</dd></div>
+                <div class="kv-item"><dt>Last Name</dt><dd>Kumar</dd></div>
+                <div class="kv-item"><dt>Passport Number</dt><dd>P7890123</dd></div>
+                <div class="kv-item"><dt>Nationality</dt><dd>USA</dd></div>
+                <div class="kv-item"><dt>Date of Birth</dt><dd>1989-08-14</dd></div>
+                <div class="kv-item"><dt>Sex</dt><dd>M</dd></div>
+                <div class="kv-item"><dt>Issue Date</dt><dd>2022-02-04</dd></div>
+                <div class="kv-item"><dt>Expiry Date</dt><dd>2032-02-04</dd></div>
+                <div class="kv-item"><dt>Issuing Country</dt><dd>USA</dd></div>
+                <div class="kv-item kv-item--mono"><dt>MRZ Line 1</dt><dd>P&lt;USAKUMAR&lt;&lt;NELZ&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;</dd></div>
+                <div class="kv-item kv-item--mono"><dt>MRZ Line 2</dt><dd>P78901230USA8908143M3202044&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;06</dd></div>
+              </dl>
+            </div>
+
+            <div class="doc-card__panel">
+              <h4 class="doc-card__subtitle">Checks <span class="doc-card__count">5 passed</span></h4>
+              <ul class="check-list" role="list">
+                <li class="check-item check-item--pass">
+                  <span class="check-item__icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" width="16" height="16">
+                      <circle cx="8" cy="8" r="7.5" fill="#1E8E5C"/>
+                      <path d="M4.2 8.4 L6.8 11 L11.8 5.6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </span>
+                  <div class="check-item__body">
+                    <div class="check-item__head">
+                      <span class="check-item__name">OCR confidence above threshold</span>
+                      <span class="check-item__confidence">92% confidence</span>
+                    </div>
+                    <p class="check-item__reason">OCR ran with average confidence 0.92, above the 0.65 minimum.</p>
+                    <span class="stage-badge stage-badge--processing">Document Processing</span>
+                  </div>
+                </li>
+                <li class="check-item check-item--pass">
+                  <span class="check-item__icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="7.5" fill="#1E8E5C"/><path d="M4.2 8.4 L6.8 11 L11.8 5.6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </span>
+                  <div class="check-item__body">
+                    <div class="check-item__head">
+                      <span class="check-item__name">Required fields extracted</span>
+                      <span class="check-item__confidence">95% confidence</span>
+                    </div>
+                    <p class="check-item__reason">All required fields extracted: passportNumber, expiryDate, dateOfBirth, firstName, lastName.</p>
+                    <span class="stage-badge stage-badge--processing">Document Processing</span>
+                  </div>
+                </li>
+                <li class="check-item check-item--pass">
+                  <span class="check-item__icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="7.5" fill="#1E8E5C"/><path d="M4.2 8.4 L6.8 11 L11.8 5.6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </span>
+                  <div class="check-item__body">
+                    <div class="check-item__head">
+                      <span class="check-item__name">Passport number matches US format</span>
+                      <span class="check-item__confidence">99% confidence</span>
+                    </div>
+                    <p class="check-item__reason">Passport number 'P7890123' matches the US format /^[A-Z0-9]{6,9}$/.</p>
+                    <span class="stage-badge stage-badge--processing">Document Processing</span>
+                  </div>
+                </li>
+                <li class="check-item check-item--pass">
+                  <span class="check-item__icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="7.5" fill="#1E8E5C"/><path d="M4.2 8.4 L6.8 11 L11.8 5.6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </span>
+                  <div class="check-item__body">
+                    <div class="check-item__head">
+                      <span class="check-item__name">MRZ checksum valid</span>
+                      <span class="check-item__confidence">94% confidence</span>
+                    </div>
+                    <p class="check-item__reason">All MRZ check digits match the document number, date of birth, and expiry date fields.</p>
+                    <span class="stage-badge stage-badge--processing">Document Processing</span>
+                  </div>
+                </li>
+                <li class="check-item check-item--pass">
+                  <span class="check-item__icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="7.5" fill="#1E8E5C"/><path d="M4.2 8.4 L6.8 11 L11.8 5.6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </span>
+                  <div class="check-item__body">
+                    <div class="check-item__head">
+                      <span class="check-item__name">Expiry date within validity window</span>
+                      <span class="check-item__confidence">97% confidence</span>
+                    </div>
+                    <p class="check-item__reason">Passport expires on 2032-02-04, well beyond the 180-day forward window.</p>
+                    <span class="stage-badge stage-badge--processing">Document Processing</span>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- EAD I-766 -->
+        <article class="doc-card">
+          <header class="doc-card__head">
+            <h3 class="doc-card__type">Work Permit / EAD</h3>
+            <code class="doc-card__filename">nelz_kumar_ead.pdf</code>
+          </header>
+          <div class="doc-card__body">
+            <div class="doc-card__panel">
+              <h4 class="doc-card__subtitle">Extracted fields</h4>
+              <dl class="kv-list">
+                <div class="kv-item"><dt>First Name</dt><dd>Nelz</dd></div>
+                <div class="kv-item"><dt>Last Name</dt><dd>Kumar</dd></div>
+                <div class="kv-item"><dt>Card Number</dt><dd>MSC2200000002</dd></div>
+                <div class="kv-item"><dt>Category</dt><dd>C09</dd></div>
+                <div class="kv-item"><dt>Date of Birth</dt><dd>1989-08-14</dd></div>
+                <div class="kv-item"><dt>Country of Birth</dt><dd>USA</dd></div>
+                <div class="kv-item"><dt>Valid From</dt><dd>2025-01-15</dd></div>
+                <div class="kv-item"><dt>Valid To</dt><dd>2027-01-14</dd></div>
+                <div class="kv-item"><dt>Terms</dt><dd>Not valid for reentry to U.S.</dd></div>
+              </dl>
+            </div>
+
+            <div class="doc-card__panel">
+              <h4 class="doc-card__subtitle">Checks <span class="doc-card__count">7 passed</span></h4>
+              <ul class="check-list" role="list">
+                <li class="check-item check-item--pass">
+                  <span class="check-item__icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="7.5" fill="#1E8E5C"/><path d="M4.2 8.4 L6.8 11 L11.8 5.6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </span>
+                  <div class="check-item__body">
+                    <div class="check-item__head">
+                      <span class="check-item__name">OCR confidence above threshold</span>
+                      <span class="check-item__confidence">90% confidence</span>
+                    </div>
+                    <p class="check-item__reason">OCR ran with average confidence 0.90, above the 0.65 minimum.</p>
+                    <span class="stage-badge stage-badge--processing">Document Processing</span>
+                  </div>
+                </li>
+                <li class="check-item check-item--pass">
+                  <span class="check-item__icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="7.5" fill="#1E8E5C"/><path d="M4.2 8.4 L6.8 11 L11.8 5.6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </span>
+                  <div class="check-item__body">
+                    <div class="check-item__head">
+                      <span class="check-item__name">Category present and in allow-list</span>
+                      <span class="check-item__confidence">94% confidence</span>
+                    </div>
+                    <p class="check-item__reason">Card category 'C09' is on the USA allow-list of EAD categories.</p>
+                    <span class="stage-badge stage-badge--processing">Document Processing</span>
+                  </div>
+                </li>
+                <li class="check-item check-item--pass">
+                  <span class="check-item__icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="7.5" fill="#1E8E5C"/><path d="M4.2 8.4 L6.8 11 L11.8 5.6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </span>
+                  <div class="check-item__body">
+                    <div class="check-item__head">
+                      <span class="check-item__name">Card validity window covers today</span>
+                      <span class="check-item__confidence">97% confidence</span>
+                    </div>
+                    <p class="check-item__reason">Card valid from 2025-01-15 to 2027-01-14. Today (2026-05-25) falls within that window.</p>
+                    <span class="stage-badge stage-badge--processing">Document Processing</span>
+                  </div>
+                </li>
+                <li class="check-item check-item--pass">
+                  <span class="check-item__icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="7.5" fill="#1E8E5C"/><path d="M4.2 8.4 L6.8 11 L11.8 5.6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </span>
+                  <div class="check-item__body">
+                    <div class="check-item__head">
+                      <span class="check-item__name">EAD category matches I-797C on file</span>
+                      <span class="check-item__confidence">99% confidence</span>
+                    </div>
+                    <p class="check-item__reason">EAD card category 'C09' matches the I-797C category on file ('C09').</p>
+                    <span class="stage-badge stage-badge--cross">Cross-Document</span>
+                  </div>
+                </li>
+                <li class="check-item check-item--pass">
+                  <span class="check-item__icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="7.5" fill="#1E8E5C"/><path d="M4.2 8.4 L6.8 11 L11.8 5.6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </span>
+                  <div class="check-item__body">
+                    <div class="check-item__head">
+                      <span class="check-item__name">USCIS case status APPROVED</span>
+                      <span class="check-item__confidence">96% confidence</span>
+                    </div>
+                    <p class="check-item__reason">USCIS case lookup for receipt 'MSC2200000002' returned status APPROVED (last updated 2025-12-04).</p>
+                    <span class="stage-badge stage-badge--external">External</span>
+                  </div>
+                </li>
+                <li class="check-item check-item--pass">
+                  <span class="check-item__icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="7.5" fill="#1E8E5C"/><path d="M4.2 8.4 L6.8 11 L11.8 5.6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </span>
+                  <div class="check-item__body">
+                    <div class="check-item__head">
+                      <span class="check-item__name">E-Verify employment eligibility</span>
+                      <span class="check-item__confidence">94% confidence</span>
+                    </div>
+                    <p class="check-item__reason">E-Verify returned EMPLOYMENT_AUTHORIZED for the submitted identity.</p>
+                    <span class="stage-badge stage-badge--external">External</span>
+                  </div>
+                </li>
+                <li class="check-item check-item--pass">
+                  <span class="check-item__icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="7.5" fill="#1E8E5C"/><path d="M4.2 8.4 L6.8 11 L11.8 5.6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </span>
+                  <div class="check-item__body">
+                    <div class="check-item__head">
+                      <span class="check-item__name">Aggregate risk score within REVIEW band</span>
+                      <span class="check-item__confidence">88% confidence</span>
+                    </div>
+                    <p class="check-item__reason">Weighted aggregate of all signals produced a risk score of 52/100, which falls in the REVIEW band (25–69). A single CROSS_DOCUMENT failure (name match) drove the score above the GENUINE ceiling.</p>
+                    <span class="stage-badge stage-badge--risk">Risk Scoring</span>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- Résumé — contains the failing check that drives the REVIEW verdict -->
+        <article class="doc-card">
+          <header class="doc-card__head">
+            <h3 class="doc-card__type">Résumé</h3>
+            <code class="doc-card__filename">neil_kumar_resume.pdf</code>
+          </header>
+          <div class="doc-card__body">
+            <div class="doc-card__panel">
+              <h4 class="doc-card__subtitle">Extracted fields</h4>
+              <dl class="kv-list">
+                <div class="kv-item"><dt>Full Name</dt><dd>Neil Kumar</dd></div>
+                <div class="kv-item"><dt>Email</dt><dd>neil.kumar@example.com</dd></div>
+                <div class="kv-item"><dt>Phone</dt><dd>+1-415-555-0199</dd></div>
+                <div class="kv-item"><dt>Education</dt><dd>MSc Statistics, Stanford University (2014)</dd></div>
+                <div class="kv-item"><dt>Employment</dt><dd>Data Scientist, Globex Corp. (2018-07&hellip;)</dd></div>
+              </dl>
+            </div>
+
+            <div class="doc-card__panel">
+              <h4 class="doc-card__subtitle">Checks <span class="doc-card__count">2 passed · 1 failed</span></h4>
+              <ul class="check-list" role="list">
+                <li class="check-item check-item--pass">
+                  <span class="check-item__icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="7.5" fill="#1E8E5C"/><path d="M4.2 8.4 L6.8 11 L11.8 5.6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </span>
+                  <div class="check-item__body">
+                    <div class="check-item__head">
+                      <span class="check-item__name">OCR confidence above threshold</span>
+                      <span class="check-item__confidence">96% confidence</span>
+                    </div>
+                    <p class="check-item__reason">OCR ran with average confidence 0.96, above the 0.65 minimum.</p>
+                    <span class="stage-badge stage-badge--processing">Document Processing</span>
+                  </div>
+                </li>
+                <li class="check-item check-item--pass">
+                  <span class="check-item__icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="7.5" fill="#1E8E5C"/><path d="M4.2 8.4 L6.8 11 L11.8 5.6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </span>
+                  <div class="check-item__body">
+                    <div class="check-item__head">
+                      <span class="check-item__name">Contact information present</span>
+                      <span class="check-item__confidence">99% confidence</span>
+                    </div>
+                    <p class="check-item__reason">Full name, email, and phone number all extracted from the résumé.</p>
+                    <span class="stage-badge stage-badge--processing">Document Processing</span>
+                  </div>
+                </li>
+                <li class="check-item check-item--fail">
+                  <span class="check-item__icon" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" width="16" height="16">
+                      <circle cx="8" cy="8" r="7.5" fill="#C0392B"/>
+                      <path d="M5 5 L11 11 M11 5 L5 11" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round"/>
+                    </svg>
+                  </span>
+                  <div class="check-item__body">
+                    <div class="check-item__head">
+                      <span class="check-item__name">Résumé name matches passport name</span>
+                      <span class="check-item__confidence">86% confidence</span>
+                    </div>
+                    <p class="check-item__reason">Name on résumé (Neil Kumar) does not match name on passport (Nelz Kumar). Surname matches exactly but the given name differs by 1 character &mdash; likely a nickname or transliteration variant. Operator confirmation required before approval.</p>
+                    <span class="stage-badge stage-badge--cross">Cross-Document</span>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <!-- Audit log ---------------------------------------------- -->
+      <section class="audit-section" aria-label="Audit log">
+        <details class="audit-details">
+          <summary class="audit-summary">
+            <span class="audit-summary__title">Audit log</span>
+            <span class="audit-summary__count">9 entries</span>
+            <span class="audit-summary__hint">Click to expand</span>
+          </summary>
+          <ol class="audit-list">
+            <li class="audit-entry">
+              <span class="audit-entry__time">10:02:11</span>
+              <span class="audit-entry__actor">operator@rts.com</span>
+              <span class="audit-entry__action">Submitted verification with 3 documents (PASSPORT, EAD_I766, RESUME)</span>
+            </li>
+            <li class="audit-entry">
+              <span class="audit-entry__time">10:02:11</span>
+              <span class="audit-entry__actor">system</span>
+              <span class="audit-entry__action">Document Processing stage started</span>
+            </li>
+            <li class="audit-entry">
+              <span class="audit-entry__time">10:02:17</span>
+              <span class="audit-entry__actor">system</span>
+              <span class="audit-entry__action">Document Processing stage completed (10/10 checks passed)</span>
+            </li>
+            <li class="audit-entry">
+              <span class="audit-entry__time">10:02:17</span>
+              <span class="audit-entry__actor">system</span>
+              <span class="audit-entry__action">Cross-Document Corroboration stage started</span>
+            </li>
+            <li class="audit-entry">
+              <span class="audit-entry__time">10:02:19</span>
+              <span class="audit-entry__actor">system</span>
+              <span class="audit-entry__action">Cross-Document Corroboration stage completed (1 failed, 1 passed) &mdash; name mismatch on résumé</span>
+            </li>
+            <li class="audit-entry">
+              <span class="audit-entry__time">10:02:19</span>
+              <span class="audit-entry__actor">system</span>
+              <span class="audit-entry__action">External Source Corroboration stage started</span>
+            </li>
+            <li class="audit-entry">
+              <span class="audit-entry__time">10:02:22</span>
+              <span class="audit-entry__actor">system</span>
+              <span class="audit-entry__action">External Source Corroboration stage completed (2/2 checks passed)</span>
+            </li>
+            <li class="audit-entry">
+              <span class="audit-entry__time">10:02:22</span>
+              <span class="audit-entry__actor">system</span>
+              <span class="audit-entry__action">Risk-Based Verdicting stage started</span>
+            </li>
+            <li class="audit-entry">
+              <span class="audit-entry__time">10:02:22</span>
+              <span class="audit-entry__actor">system</span>
+              <span class="audit-entry__action">Verdict REVIEW issued with risk score 52 (escalation: manual review)</span>
+            </li>
+          </ol>
+        </details>
+      </section>
     </div>
   </main>
 
@@ -299,9 +730,7 @@
       if (view === "upload") {
         document.getElementById("files-card-preview").hidden = false;
       }
-      if (view === "result") {
-        document.getElementById("result-id").textContent = "ver_2026_05_25_001";
-      }
+      // (The result view's ID is hardcoded in the markup for step-1 layout review.)
     })();
   </script>
 </body>
