@@ -8,11 +8,13 @@
 /* ---- Tokens --------------------------------------------------------------- */
 
 :root {
-  /* Palette (from the deck) */
+  /* Palette (from the deck). Single source of truth — no inline hex codes
+     in component rules. */
   --c-navy:        #0D2D3A;
   --c-navy-2:      #1B3D4A;
   --c-teal:        #137575;
   --c-teal-dark:   #0F5C5C;
+  --c-teal-edge:   #BFDEDA;       /* divider/border on light-teal surfaces */
   --c-light-teal:  #E3F1EF;
   --c-bg:          #F4F6F8;
   --c-surface:     #FFFFFF;
@@ -23,9 +25,30 @@
   --c-text-faint:  #8A949D;
   --c-danger:      #C9322E;
   --c-danger-bg:   #FDECEA;
+  --c-danger-edge: #F4B7B4;
   --c-warn-bg:     #FFF6E5;
+  --c-warn-edge:   #E9C97A;
+  --c-warn-text:   #8A6310;
   --c-disabled-bg:    #DDE3E8;
   --c-disabled-text:  #8A949D;
+  --c-row-hover:      #F8FAFB;
+
+  /* Microsoft sign-in button — official brand guidance colors. */
+  --c-ms-border:      #8C8C8C;
+  --c-ms-text:        #5E5E5E;
+  --c-ms-hover-bg:    #F5F5F5;
+
+  /* Dropzone (light-teal variants). */
+  --c-dropzone-border:   #A8D5D0;
+  --c-dropzone-active:   #D7EBE8;
+
+  /* Stage badge palette — four distinct hues for scanability. */
+  --c-stage-cross-bg:      #ECECF8;
+  --c-stage-cross-fg:      #424B97;
+  --c-stage-cross-edge:    #CDCEEC;
+  --c-stage-external-bg:   #EAF2FB;
+  --c-stage-external-fg:   #1F4F8A;
+  --c-stage-external-edge: #C6DAEF;
 
   /* Radii */
   --r-card:    8px;
@@ -120,7 +143,7 @@ a:focus-visible,
 
 .btn--primary {
   --btn-bg:     var(--c-teal);
-  --btn-fg:     #FFFFFF;
+  --btn-fg:     var(--c-surface);
   --btn-border: var(--c-teal);
 }
 .btn--primary:hover:not(:disabled) {
@@ -149,7 +172,7 @@ a:focus-visible,
 
 /* Microsoft sign-in button — follows MS brand guidance.
    White background, dark grey text, 1px grey border, four-square logo on
-   the left, label on the right. Minimum height 41px. */
+   the left, label on the right. Minimum height 44 px. */
 .btn-ms {
   display: inline-flex;
   align-items: center;
@@ -157,10 +180,10 @@ a:focus-visible,
   width: 100%;
   min-height: 44px;
   padding: 0 18px;
-  background: #FFFFFF;
-  border: 1px solid #8C8C8C;
+  background: var(--c-surface);
+  border: 1px solid var(--c-ms-border);
   border-radius: var(--r-button);
-  color: #5E5E5E;
+  color: var(--c-ms-text);
   font: inherit;
   font-size: 15px;
   font-weight: 500;
@@ -168,12 +191,12 @@ a:focus-visible,
   transition: background-color .12s ease, box-shadow .12s ease;
 }
 .btn-ms:hover:not(:disabled) {
-  background: #F5F5F5;
+  background: var(--c-ms-hover-bg);
 }
 .btn-ms:disabled {
   cursor: not-allowed;
   color: var(--c-disabled-text);
-  background: #F5F5F5;
+  background: var(--c-ms-hover-bg);
 }
 .btn-ms__logo {
   display: inline-flex;
@@ -265,20 +288,6 @@ a:focus-visible,
   color: var(--c-teal);
   border-bottom-color: var(--c-teal);
 }
-
-/* ---- Preview banner (step-1 only) ---------------------------------------- */
-
-.preview-banner {
-  max-width: 1080px;
-  margin: var(--space-4) auto 0;
-  padding: var(--space-3) var(--space-4);
-  background: var(--c-warn-bg);
-  border: 1px solid #F0D292;
-  border-radius: var(--r-card);
-  font-size: 13px;
-  color: var(--c-navy);
-}
-.preview-banner a { margin: 0 2px; }
 
 /* ---- Views & page layout ------------------------------------------------- */
 
@@ -415,12 +424,12 @@ a:focus-visible,
   gap: var(--space-3);
   padding: var(--space-6) var(--space-5);
   background: var(--c-light-teal);
-  border: 1.5px dashed #A8D5D0;
+  border: 1.5px dashed var(--c-dropzone-border);
   border-radius: var(--r-card);
   color: var(--c-text-muted);
 }
 .dropzone.is-dragover {
-  background: #D7EBE8;
+  background: var(--c-dropzone-active);
   border-color: var(--c-teal);
 }
 .dropzone__hint {
@@ -509,13 +518,13 @@ a:focus-visible,
   margin-top: 2px;
 }
 .filelist__row--warn {
-  border-color: #E9C97A;
+  border-color: var(--c-warn-edge);
   background: var(--c-warn-bg);
 }
 .filelist__rowwarn {
   grid-column: 1 / -1;
   font-size: 12px;
-  color: #8A6310;
+  color: var(--c-warn-text);
   margin-top: 2px;
 }
 .filelist__error {
@@ -538,7 +547,7 @@ a:focus-visible,
   margin: var(--space-3) 0 0;
   padding: var(--space-3) var(--space-4);
   background: var(--c-danger-bg);
-  border: 1px solid #F4B7B4;
+  border: 1px solid var(--c-danger-edge);
   border-radius: var(--r-input);
   color: var(--c-danger);
   font-size: 13px;
@@ -566,8 +575,8 @@ a:focus-visible,
   letter-spacing: 0.04em;
   text-transform: uppercase;
   background: var(--c-warn-bg);
-  color: #8A6310;
-  border: 1px solid #E9C97A;
+  color: var(--c-warn-text);
+  border: 1px solid var(--c-warn-edge);
   padding: 1px 6px;
   border-radius: 3px;
 }
@@ -725,7 +734,7 @@ a:focus-visible,
   justify-content: center;
   padding: 14px 24px;
   border-radius: 999px;
-  color: #FFFFFF;
+  color: var(--c-surface);
   font-size: 18px;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -1016,10 +1025,10 @@ a:focus-visible,
   color: var(--c-navy);
   border: 1px solid var(--c-border);
 }
-.stage-badge--processing { background: #E3F1EF; color: #0F5C5C; border-color: #BFDEDA; }
-.stage-badge--cross      { background: #ECECF8; color: #424B97; border-color: #CDCEEC; }
-.stage-badge--external   { background: #EAF2FB; color: #1F4F8A; border-color: #C6DAEF; }
-.stage-badge--risk       { background: #FBF1DC; color: #8A6310; border-color: #F0D292; }
+.stage-badge--processing { background: var(--c-light-teal);        color: var(--c-teal-dark); border-color: var(--c-teal-edge); }
+.stage-badge--cross      { background: var(--c-stage-cross-bg);    color: var(--c-stage-cross-fg); border-color: var(--c-stage-cross-edge); }
+.stage-badge--external   { background: var(--c-stage-external-bg); color: var(--c-stage-external-fg); border-color: var(--c-stage-external-edge); }
+.stage-badge--risk       { background: var(--c-verdict-review-bg); color: var(--c-warn-text); border-color: var(--c-verdict-review-edge); }
 
 /* ---- Audit log ---------------------------------------------------------- */
 
@@ -1167,12 +1176,12 @@ a:focus-visible,
 }
 .rules-message--error {
   background: var(--c-danger-bg);
-  border-color: #F4B7B4;
+  border-color: var(--c-danger-edge);
   color: var(--c-danger);
 }
 .rules-message--info {
   background: var(--c-light-teal);
-  border-color: #BFDEDA;
+  border-color: var(--c-teal-edge);
   color: var(--c-navy);
 }
 
@@ -1210,7 +1219,7 @@ a:focus-visible,
   border-bottom: none;
 }
 .rules-table tbody tr:hover {
-  background: #F8FAFB;
+  background: var(--c-row-hover);
 }
 
 .doctype-tag {
@@ -1221,7 +1230,7 @@ a:focus-visible,
   font-size: 11px;
   font-weight: 600;
   border-radius: 3px;
-  border: 1px solid #BFDEDA;
+  border: 1px solid var(--c-teal-edge);
 }
 
 .severity-pill {
@@ -1235,19 +1244,19 @@ a:focus-visible,
   border: 1px solid;
 }
 .severity-pill--low {
-  background: #E5F4EC;
+  background: var(--c-verdict-genuine-bg);
   color: var(--c-verdict-genuine);
   border-color: var(--c-verdict-genuine-edge);
 }
 .severity-pill--medium {
   background: var(--c-warn-bg);
-  color: #8A6310;
-  border-color: #E9C97A;
+  color: var(--c-warn-text);
+  border-color: var(--c-warn-edge);
 }
 .severity-pill--high {
   background: var(--c-danger-bg);
   color: var(--c-danger);
-  border-color: #F4B7B4;
+  border-color: var(--c-danger-edge);
 }
 
 .rules-cell--weight {

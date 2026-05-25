@@ -387,14 +387,17 @@ function refreshSubmitButton() {
 async function onUploadSubmit(e) {
   e.preventDefault();
   // Defensive: refreshSubmitButton already disables the button when invalid,
-  // but if a user hits Enter on a form field the submit can fire anyway.
+  // but Enter on a form field can fire submit anyway.
   if (appState.uploadForm.submitting) return;
+  if (!validateUploadForm()) return;
+  await doSubmitVerification();
+}
 
+function validateUploadForm() {
   const { country, files } = appState.uploadForm;
-  let valid = true;
   hideFilelistError();
   clearFieldError("upload-country-error");
-
+  let valid = true;
   if (!country) {
     showFieldError("upload-country-error", "Please select a country before submitting.");
     valid = false;
@@ -403,16 +406,18 @@ async function onUploadSubmit(e) {
   if (untagged.length > 0) {
     const word = untagged.length === 1 ? "file is" : "files are";
     showFilelistError(`${untagged.length} ${word} missing a document type. Tag every file before submitting.`);
-    renderUploadFiles(); // re-render so the row markers update
+    renderUploadFiles(); // re-render so per-row markers update
     valid = false;
   }
-  if (!valid) return;
+  return valid;
+}
 
+async function doSubmitVerification() {
+  const { country, files } = appState.uploadForm;
   appState.uploadForm.submitting = true;
   refreshSubmitButton();
   const btn = document.getElementById("submit-btn");
   btn.textContent = "Submitting…";
-
   try {
     const payload = {
       country,
@@ -420,7 +425,7 @@ async function onUploadSubmit(e) {
     };
     const result = await api.submitVerification(payload);
     appState.currentVerificationId = result.verificationId;
-    // renderView() resets uploadForm when leaving #upload, so back-button
+    // renderView() resets uploadForm on leaving #upload, so back-button
     // here lands the user on a fresh upload form rather than the stale one.
     setHash("result", result.verificationId);
   } catch (err) {
@@ -634,45 +639,47 @@ function formatDocType(t) {
 
 function renderDocumentCard(doc) {
   const typeLabel = formatDocType(doc.documentType);
-  const fields = doc.extractedFields || {};
+  const filename = escapeHtml(doc.filename || "(no filename)");
+  const fieldEntries = Object.entries(doc.extractedFields || {});
   const checks = doc.checks || [];
-  const fieldEntries = Object.entries(fields);
+
+  const header = `
+    <header class="doc-card__head">
+      <h3 class="doc-card__type">${escapeHtml(typeLabel)}</h3>
+      <code class="doc-card__filename">${filename}</code>
+    </header>
+  `;
 
   // INSUFFICIENT edge case: doc couldn't be processed at all.
   if (fieldEntries.length === 0 && checks.length === 0) {
     return `
       <article class="doc-card doc-card--empty">
-        <header class="doc-card__head">
-          <h3 class="doc-card__type">${escapeHtml(typeLabel)}</h3>
-          <code class="doc-card__filename">${escapeHtml(doc.filename || "(no filename)")}</code>
-        </header>
+        ${header}
         <div class="doc-card__empty" role="status">Document could not be processed.</div>
       </article>
     `;
   }
-
-  const passed = checks.filter((c) => c.passed).length;
-  const failed = checks.length - passed;
-  const countLabel = failed === 0 ? `${passed} passed` : `${passed} passed · ${failed} failed`;
-
   return `
     <article class="doc-card">
-      <header class="doc-card__head">
-        <h3 class="doc-card__type">${escapeHtml(typeLabel)}</h3>
-        <code class="doc-card__filename">${escapeHtml(doc.filename || "(no filename)")}</code>
-      </header>
+      ${header}
       <div class="doc-card__body">
         <div class="doc-card__panel">
           <h4 class="doc-card__subtitle">Extracted fields</h4>
           ${renderKvList(fieldEntries)}
         </div>
         <div class="doc-card__panel">
-          <h4 class="doc-card__subtitle">Checks <span class="doc-card__count">${escapeHtml(countLabel)}</span></h4>
+          <h4 class="doc-card__subtitle">Checks <span class="doc-card__count">${escapeHtml(checkCountLabel(checks))}</span></h4>
           ${renderCheckList(checks)}
         </div>
       </div>
     </article>
   `;
+}
+
+function checkCountLabel(checks) {
+  const passed = checks.filter((c) => c.passed).length;
+  const failed = checks.length - passed;
+  return failed === 0 ? `${passed} passed` : `${passed} passed · ${failed} failed`;
 }
 
 function renderKvList(entries) {
