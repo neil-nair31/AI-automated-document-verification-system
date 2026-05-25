@@ -1,1560 +1,671 @@
 // mockData.js
 // -----------------------------------------------------------------------------
-// Fixtures used while USE_MOCK_AUTH is true and the real backend isn't wired
-// in yet. Shapes mirror what a MongoDB-backed FastAPI service will actually
-// return — nested documents, no joins. Anything the UI renders can be read
-// straight off the verification doc with property access; no client-side
-// stitching of separate collections.
+// Mock fixtures for the verification platform frontend.
 //
-// Document shape (one verification = one MongoDB doc):
+// Shape mirrors what a FastAPI + MongoDB backend will return — nested
+// documents, not joined tables. A verification is ONE document containing the
+// verdict, every uploaded document, every check inside each document, and the
+// human-readable reason inside each check.
 //
-//   {
-//     _id:           "65a1...c8f9"          // 24-char ObjectId string
-//     country:       "US"                   // ISO 3166-1 alpha-2
-//     operator:      { email, displayName, role, objectId }
-//     status:        "COMPLETED"            // PENDING | PROCESSING | COMPLETED | FAILED
-//     verdict:       "GENUINE"              // GENUINE | REVIEW | HIGH_RISK | INSUFFICIENT
-//     risk_level:    "LOW"                  // LOW | MEDIUM | HIGH | UNREADABLE
-//     risk_score:    0.92                   // 0..1 aggregated
-//     escalation:    { action, label, description }
-//     created_at, completed_at              // ISO-8601 UTC strings
+// Stage placement (since today's spec has no top-level `checks` array):
+//   - DOCUMENT_PROCESSING  → on the document the check was run against
+//   - CROSS_DOCUMENT       → on the document that is the natural anchor of the
+//                            comparison (e.g. name-match on the resume, EAD-
+//                            category-vs-I-797C on the EAD card)
+//   - EXTERNAL             → on the document being externally verified (e.g.
+//                            USCIS / E-Verify lookups on the EAD card)
+//   - RISK_SCORING         → on the EAD card (the primary work-authorisation
+//                            document) as the aggregate-of-signals check
 //
-//     pipeline: {
-//       stages: [                           // ALWAYS 4 (post team-review decision)
-//         { name: "DOCUMENT_PROCESSING",     label, status, started_at, completed_at, summary }
-//         { name: "CROSS_DOCUMENT",          label, status, started_at, completed_at, summary }
-//         { name: "EXTERNAL",                label, status, started_at, completed_at, summary }
-//         { name: "RISK_VERDICT",            label, status, started_at, completed_at, summary }
-//       ]
-//     }
+// The UI just iterates `documents[].checks[]` and groups by `stage` to render
+// the four pipeline panels.
 //
-//     documents: [                          // one entry per uploaded file
-//       {
-//         _id, document_type, original_filename, mime_type, size_bytes,
-//         ocr_confidence,
-//         extracted_fields:   { ... }       // shape varies by document_type
-//         field_confidences:  { ... }       // mirrors extracted_fields keys
-//         checks: [                         // ALL per-document checks live here
-//           {                               // (Document Processing stage only;
-//             _id, stage: "DOCUMENT_PROCESSING",
-//             name, label, status, score, weight,
-//             reasons: [                    // every check carries 1+ reasons
-//               { code, text, passed }
-//             ]
-//           }
-//         ]
-//       }
-//     ]
-//
-//     cross_document_checks: [...]          // Cross-Document Corroboration stage
-//                                           // (verification-scoped — span multiple
-//                                           //  docs, so not nested under any one)
-//
-//     external_checks: [...]                // External Source Corroboration stage
-//                                           // (one entry per vendor probe, with
-//                                           //  a `source` field: USCIS | E_VERIFY | NSC)
-//
-//     verdict_factors: [...]                // Risk-Based Verdicting stage —
-//                                           // the weighted signals that drove
-//                                           // the final score, with contributions
-//
-//     audit: [...]                          // immutable event log; returned by
-//                                           //  GET /verifications/:id/audit
-//   }
-//
-// IMPORTANT: the four pipeline stages are FIXED post team-review. Per-document
-// checks (OCR confidence, required fields, format regex, MRZ checksum, expiry
-// validity, internal consistency) all collapse into Document Processing.
-// Cross-document corroboration is its own stage because it cannot start until
-// every document has finished processing.
-//
-// Loaded as a classic script. Exposes `window.mockData`.
+// Pure ES module — imported by api.js. Do NOT import this file anywhere else;
+// every other consumer talks to api.js.
 // -----------------------------------------------------------------------------
 
-(function () {
-  "use strict";
+// ----- Stage display labels --------------------------------------------------
+// Single source of truth so the UI can't drift from the enum.
 
-  // ===========================================================================
-  // Entra users — unchanged from the previous step. Shapes match what MSAL
-  // returns once the real Entra flow is wired up.
-  // ===========================================================================
+export const STAGES = {
+  DOCUMENT_PROCESSING: "Document Processing",
+  CROSS_DOCUMENT: "Cross-Document Corroboration",
+  EXTERNAL: "External Source Corroboration",
+  RISK_SCORING: "Risk-Based Verdicting",
+};
 
-  const entraUsers = [
+// ----- Entra users -----------------------------------------------------------
+// accessToken values are fake — shaped like `header.payload.signature` so dev
+// tools display them plausibly in the Authorization header. Not real JWTs.
+
+export const entraUsers = [
+  {
+    email: "admin@rts.com",
+    displayName: "Priya Admin",
+    role: "ADMIN",
+    accessToken:
+      "mock.eyJzdWIiOiJhZG1pbkBydHMuY29tIiwicm9sZSI6IkFETUlOIiwibmFtZSI6IlByaXlhIEFkbWluIn0.sig",
+  },
+  {
+    email: "operator@rts.com",
+    displayName: "Sam Operator",
+    role: "OPERATOR",
+    accessToken:
+      "mock.eyJzdWIiOiJvcGVyYXRvckBydHMuY29tIiwicm9sZSI6Ik9QRVJBVE9SIiwibmFtZSI6IlNhbSBPcGVyYXRvciJ9.sig",
+  },
+];
+
+// ----- Country rules ---------------------------------------------------------
+// Flat list of validation rules per country. `weight` (1-10) feeds the trust
+// score. `severity` (low|medium|high) drives escalation when the rule fails.
+// `enabled` lets an admin disable a rule without deleting it (so audit history
+// stays intact).
+
+export const countryRules = {
+  USA: [
+    { ruleId: "USA_PSP_001", documentType: "PASSPORT",         checkName: "OCR confidence above threshold",           weight: 5,  severity: "low",    enabled: true },
+    { ruleId: "USA_PSP_002", documentType: "PASSPORT",         checkName: "Required fields extracted",                weight: 6,  severity: "medium", enabled: true },
+    { ruleId: "USA_PSP_003", documentType: "PASSPORT",         checkName: "Passport number matches US format",        weight: 6,  severity: "medium", enabled: true },
+    { ruleId: "USA_PSP_004", documentType: "PASSPORT",         checkName: "MRZ checksum valid",                       weight: 9,  severity: "high",   enabled: true },
+    { ruleId: "USA_PSP_005", documentType: "PASSPORT",         checkName: "Expiry date within validity window",       weight: 8,  severity: "high",   enabled: true },
+    { ruleId: "USA_EAD_001", documentType: "EAD_I766",         checkName: "OCR confidence above threshold",           weight: 5,  severity: "low",    enabled: true },
+    { ruleId: "USA_EAD_002", documentType: "EAD_I766",         checkName: "Category present and in allow-list",       weight: 6,  severity: "medium", enabled: true },
+    { ruleId: "USA_EAD_003", documentType: "EAD_I766",         checkName: "Card validity window covers today",        weight: 7,  severity: "high",   enabled: true },
+    { ruleId: "USA_EAD_004", documentType: "EAD_I766",         checkName: "EAD category matches I-797C on file",      weight: 10, severity: "high",   enabled: true },
+    { ruleId: "USA_EAD_005", documentType: "EAD_I766",         checkName: "USCIS case status APPROVED",               weight: 9,  severity: "high",   enabled: true },
+    { ruleId: "USA_EAD_006", documentType: "EAD_I766",         checkName: "E-Verify employment eligibility",          weight: 8,  severity: "high",   enabled: true },
+    { ruleId: "USA_RES_001", documentType: "RESUME",           checkName: "Resume name matches passport name",        weight: 7,  severity: "medium", enabled: true },
+    { ruleId: "USA_RES_002", documentType: "RESUME",           checkName: "Contact information present",              weight: 3,  severity: "low",    enabled: true },
+    { ruleId: "USA_DL_001",  documentType: "DRIVERS_LICENSE",  checkName: "License number matches state format",      weight: 4,  severity: "medium", enabled: true },
+    { ruleId: "USA_DL_002",  documentType: "DRIVERS_LICENSE",  checkName: "License expiry within validity window",    weight: 7,  severity: "high",   enabled: true },
+    { ruleId: "USA_DEG_001", documentType: "DEGREE",           checkName: "Institution accreditation lookup (NSC)",   weight: 6,  severity: "medium", enabled: true },
+  ],
+  India: [
+    { ruleId: "IND_PSP_001", documentType: "PASSPORT", checkName: "OCR confidence above threshold",        weight: 5, severity: "low",    enabled: true },
+    { ruleId: "IND_PSP_002", documentType: "PASSPORT", checkName: "Passport number matches India format",  weight: 6, severity: "medium", enabled: true },
+    { ruleId: "IND_PSP_003", documentType: "PASSPORT", checkName: "MRZ checksum valid",                    weight: 9, severity: "high",   enabled: true },
+    { ruleId: "IND_PSP_004", documentType: "PASSPORT", checkName: "Expiry date within validity window",    weight: 8, severity: "high",   enabled: true },
+    { ruleId: "IND_RES_001", documentType: "RESUME",   checkName: "Resume name matches passport name",     weight: 7, severity: "medium", enabled: true },
+    { ruleId: "IND_DEG_001", documentType: "DEGREE",   checkName: "Institution recognised by UGC/AICTE",   weight: 6, severity: "medium", enabled: true },
+    { ruleId: "IND_DEG_002", documentType: "DEGREE",   checkName: "Degree title matches resume claim",     weight: 5, severity: "medium", enabled: true },
+  ],
+};
+
+// =============================================================================
+// Verification fixtures
+// =============================================================================
+
+// ----- Record 1: GENUINE -----------------------------------------------------
+// Marcus Lee — clean US passport + EAD (C09 matches I-797C) + resume.
+// Every check passes. riskScore 12 → GENUINE → auto-approve.
+
+const verificationGenuine = {
+  verificationId: "ver_2026_05_25_001",
+  submittedBy: "operator@rts.com",
+  country: "USA",
+  submittedAt: "2026-05-25T09:14:22.000Z",
+  documents: [
     {
-      email: "priya.patel@contoso.onmicrosoft.com",
-      displayName: "Priya Patel",
-      role: "ADMIN",
-      tenantId: "00000000-0000-0000-0000-000000000000",
-      objectId: "11111111-1111-1111-1111-111111111111",
+      documentType: "PASSPORT",
+      filename: "marcus_lee_passport.pdf",
+      extractedFields: {
+        firstName: "Marcus",
+        lastName: "Lee",
+        passportNumber: "X1234567",
+        nationality: "USA",
+        dateOfBirth: "1991-04-22",
+        sex: "M",
+        issueDate: "2021-06-10",
+        expiryDate: "2031-06-10",
+        issuingCountry: "USA",
+        mrzLine1: "P<USALEE<<MARCUS<<<<<<<<<<<<<<<<<<<<<<<<<<<<",
+        mrzLine2: "X12345672USA9104224M3106106<<<<<<<<<<<<<<00",
+      },
+      checks: [
+        {
+          checkName: "OCR confidence above threshold",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.94,
+          reason: "OCR ran with average confidence 0.94, above the 0.65 minimum required for passports.",
+        },
+        {
+          checkName: "Required fields extracted",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.97,
+          reason: "All required fields extracted: passportNumber, expiryDate, dateOfBirth, firstName, lastName.",
+        },
+        {
+          checkName: "Passport number matches US format",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.99,
+          reason: "Passport number 'X1234567' matches the US format /^[A-Z0-9]{6,9}$/.",
+        },
+        {
+          checkName: "MRZ checksum valid",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.96,
+          reason: "All MRZ check digits match the document number, date of birth, and expiry date fields.",
+        },
+        {
+          checkName: "Expiry date within validity window",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.98,
+          reason: "Passport expires on 2031-06-10, well beyond the 180-day forward window required by USA rules.",
+        },
+      ],
     },
     {
-      email: "marcus.lee@contoso.onmicrosoft.com",
-      displayName: "Marcus Lee",
-      role: "OPERATOR",
-      tenantId: "00000000-0000-0000-0000-000000000000",
-      objectId: "22222222-2222-2222-2222-222222222222",
-    },
-  ];
-
-  // ===========================================================================
-  // Country rules — one document per country in the `country_rules` collection.
-  // ===========================================================================
-
-  const rules = {
-    US: {
-      _id: "65a1b2c3d4e5f6a7b8c90001",
-      country: "US",
-      version: 1,
-      is_active: true,
-      updated_by: "priya.patel@contoso.onmicrosoft.com",
-      updated_at: "2026-05-15T14:22:10.000Z",
-      config: {
-        thresholds: {
-          genuine_min: 0.8,
-          review_min: 0.55,
-          unreadable_ocr_min: 0.3,
-        },
-        signal_weights: {
-          uscis: 1.0,
-          e_verify: 0.9,
-          nsc: 0.8,
-          mrz_checksum: 0.9,
-          internal_consistency: 0.7,
-          cross_doc_identity: 0.8,
-          ead_category_match: 1.0,
-          ocr_confidence: 0.6,
-          public_profile: 0.2,
-        },
-        documents: {
-          PASSPORT: {
-            required_fields: ["passport_number", "expiry_date", "dob", "given_names", "surname"],
-            min_field_confidence: 0.7,
-            min_doc_confidence: 0.65,
-            passport_number_regex: "^[A-Z0-9]{6,9}$",
-            min_validity_days: 180,
-          },
-          EAD_I766: {
-            required_fields: ["card_number", "category", "valid_to"],
-            high_weight_categories: ["C09", "C36"],
-            valid_categories: ["A03", "A05", "C08", "C09", "C26", "C36"],
-          },
-        },
+      documentType: "EAD_I766",
+      filename: "marcus_lee_ead.pdf",
+      extractedFields: {
+        firstName: "Marcus",
+        lastName: "Lee",
+        cardNumber: "MSC2190000001",
+        category: "C09",
+        dateOfBirth: "1991-04-22",
+        countryOfBirth: "USA",
+        validFrom: "2024-12-01",
+        validTo: "2026-11-30",
+        terms: "Not valid for reentry to U.S.",
       },
-    },
-    IN: {
-      _id: "65a1b2c3d4e5f6a7b8c90002",
-      country: "IN",
-      version: 1,
-      is_active: true,
-      updated_by: "priya.patel@contoso.onmicrosoft.com",
-      updated_at: "2026-05-15T14:22:10.000Z",
-      config: {
-        thresholds: { genuine_min: 0.75, review_min: 0.5, unreadable_ocr_min: 0.3 },
-        signal_weights: {
-          mrz_checksum: 0.9,
-          internal_consistency: 0.7,
-          cross_doc_identity: 0.8,
-          ocr_confidence: 0.6,
-          public_profile: 0.2,
-        },
-        documents: {
-          PASSPORT: {
-            required_fields: ["passport_number", "expiry_date", "dob"],
-            min_field_confidence: 0.7,
-            passport_number_regex: "^[A-Z][0-9]{7}$",
-            min_validity_days: 180,
-          },
-        },
-      },
-    },
-  };
-
-  // ===========================================================================
-  // Stage label lookup — single source of truth so the UI can't drift.
-  // ===========================================================================
-
-  const STAGE_LABELS = {
-    DOCUMENT_PROCESSING: "Document Processing",
-    CROSS_DOCUMENT: "Cross-Document Corroboration",
-    EXTERNAL: "External Source Corroboration",
-    RISK_VERDICT: "Risk-Based Verdicting",
-  };
-
-  // ===========================================================================
-  // VERIFICATION 1 — GENUINE
-  //
-  //   Subject:  Marcus Lee (US passport + EAD C09 + resume)
-  //   Outcome:  every check passes; weighted score 0.92 → GENUINE → LOW → AUTO_APPROVE.
-  // ===========================================================================
-
-  const verificationGenuine = {
-    _id: "65a3f1e2b9c8d4a7e2f10001",
-    country: "US",
-    operator: {
-      email: "marcus.lee@contoso.onmicrosoft.com",
-      displayName: "Marcus Lee",
-      role: "OPERATOR",
-      objectId: "22222222-2222-2222-2222-222222222222",
-    },
-    status: "COMPLETED",
-    verdict: "GENUINE",
-    risk_level: "LOW",
-    risk_score: 0.92,
-    escalation: {
-      action: "AUTO_APPROVE",
-      label: "Auto-approved",
-      description:
-        "Aggregate score 0.92 lies in the GENUINE band (≥ 0.80). No human review required.",
-    },
-    created_at: "2026-05-20T09:14:22.000Z",
-    completed_at: "2026-05-20T09:14:31.300Z",
-
-    pipeline: {
-      stages: [
+      checks: [
         {
-          name: "DOCUMENT_PROCESSING",
-          label: STAGE_LABELS.DOCUMENT_PROCESSING,
-          status: "COMPLETED",
-          started_at: "2026-05-20T09:14:22.100Z",
-          completed_at: "2026-05-20T09:14:27.400Z",
-          summary: "OCR, extraction, and per-document validation across 3 files. 15/15 checks passed.",
+          checkName: "OCR confidence above threshold",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.91,
+          reason: "OCR ran with average confidence 0.91, above the 0.65 minimum.",
         },
         {
-          name: "CROSS_DOCUMENT",
-          label: STAGE_LABELS.CROSS_DOCUMENT,
-          status: "COMPLETED",
-          started_at: "2026-05-20T09:14:27.450Z",
-          completed_at: "2026-05-20T09:14:29.100Z",
-          summary: "Identity, DOB, and address consistency confirmed across passport, EAD, and resume.",
+          checkName: "Category present and in allow-list",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.95,
+          reason: "Card category 'C09' is on the USA allow-list of EAD categories.",
         },
         {
-          name: "EXTERNAL",
-          label: STAGE_LABELS.EXTERNAL,
-          status: "COMPLETED",
-          started_at: "2026-05-20T09:14:29.150Z",
-          completed_at: "2026-05-20T09:14:30.900Z",
-          summary: "USCIS, E-Verify, and I-797C category cross-reference all confirm.",
+          checkName: "Card validity window covers today",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.98,
+          reason: "Card valid from 2024-12-01 to 2026-11-30. Today (2026-05-25) falls within that window.",
         },
         {
-          name: "RISK_VERDICT",
-          label: STAGE_LABELS.RISK_VERDICT,
-          status: "COMPLETED",
-          started_at: "2026-05-20T09:14:30.950Z",
-          completed_at: "2026-05-20T09:14:31.300Z",
-          summary: "Weighted aggregate 0.92 → GENUINE → auto-approve.",
+          checkName: "EAD category matches I-797C on file",
+          stage: "CROSS_DOCUMENT",
+          passed: true,
+          confidence: 0.99,
+          reason: "EAD card category 'C09' matches the I-797C category on file ('C09').",
+        },
+        {
+          checkName: "USCIS case status APPROVED",
+          stage: "EXTERNAL",
+          passed: true,
+          confidence: 0.97,
+          reason: "USCIS case lookup for receipt 'MSC2190000001' returned status APPROVED (last updated 2025-11-20).",
+        },
+        {
+          checkName: "E-Verify employment eligibility",
+          stage: "EXTERNAL",
+          passed: true,
+          confidence: 0.95,
+          reason: "E-Verify returned EMPLOYMENT_AUTHORIZED for the submitted identity.",
+        },
+        {
+          checkName: "Aggregate risk score within GENUINE band",
+          stage: "RISK_SCORING",
+          passed: true,
+          confidence: 0.93,
+          reason: "Weighted aggregate of all signals produced a risk score of 12/100, well within the GENUINE band (<25).",
         },
       ],
     },
-
-    documents: [
-      {
-        _id: "65a3f1e2b9c8d4a7e2f10101",
-        document_type: "PASSPORT",
-        original_filename: "passport.pdf",
-        mime_type: "application/pdf",
-        size_bytes: 145782,
-        ocr_confidence: 0.94,
-        extracted_fields: {
-          passport_number: "X1234567",
-          surname: "LEE",
-          given_names: "MARCUS",
-          dob: "1991-04-22",
-          sex: "M",
-          nationality: "USA",
-          issue_date: "2021-06-10",
-          expiry_date: "2031-06-10",
-          issuing_country: "USA",
-          mrz_line1: "P<USALEE<<MARCUS<<<<<<<<<<<<<<<<<<<<<<<<<<<<",
-          mrz_line2: "X12345672USA9104224M3106106<<<<<<<<<<<<<<00",
-        },
-        field_confidences: {
-          passport_number: 0.97,
-          surname: 0.96,
-          given_names: 0.95,
-          dob: 0.93,
-          expiry_date: 0.92,
-          mrz_line1: 0.88,
-          mrz_line2: 0.87,
-        },
-        checks: [
-          {
-            _id: "65a3f1e2b9c8d4a7e2f10201",
-            stage: "DOCUMENT_PROCESSING",
-            name: "passport.ocr_confidence",
-            label: "OCR confidence",
-            status: "PASS",
-            score: 0.94,
-            weight: 0.6,
-            reasons: [
-              { code: "ocr_above_threshold", text: "OCR confidence 0.94 ≥ minimum 0.65", passed: true },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f10202",
-            stage: "DOCUMENT_PROCESSING",
-            name: "passport.required_fields",
-            label: "Required fields present",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.5,
-            reasons: [
-              {
-                code: "all_required_present",
-                text: "All 5 required fields present: passport_number, expiry_date, dob, given_names, surname.",
-                passed: true,
-              },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f10203",
-            stage: "DOCUMENT_PROCESSING",
-            name: "passport.number_format",
-            label: "Passport number format",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.5,
-            reasons: [
-              {
-                code: "regex_match",
-                text: "Passport number 'X1234567' matches US format /^[A-Z0-9]{6,9}$/.",
-                passed: true,
-              },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f10204",
-            stage: "DOCUMENT_PROCESSING",
-            name: "passport.mrz_checksum",
-            label: "MRZ checksum",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.9,
-            reasons: [
-              {
-                code: "mrz_checksum_valid",
-                text: "MRZ check digits match the document, DOB, and expiry-date fields.",
-                passed: true,
-              },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f10205",
-            stage: "DOCUMENT_PROCESSING",
-            name: "passport.expiry_validity",
-            label: "Expiry within validity window",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.7,
-            reasons: [
-              {
-                code: "expiry_beyond_window",
-                text: "Expires 2031-06-10 — well beyond the required 180-day forward window.",
-                passed: true,
-              },
-              {
-                code: "expiry_after_issue",
-                text: "Expiry date is after issue date 2021-06-10.",
-                passed: true,
-              },
-            ],
-          },
+    {
+      documentType: "RESUME",
+      filename: "marcus_lee_resume.pdf",
+      extractedFields: {
+        fullName: "Marcus Lee",
+        email: "marcus.lee@example.com",
+        phone: "+1-415-555-0142",
+        education: [
+          { degree: "BSc Computer Science", institution: "UC Berkeley", year: 2013 },
+        ],
+        employment: [
+          { title: "Senior Software Engineer", employer: "Acme Inc.", start: "2019-03", end: null },
         ],
       },
-
-      {
-        _id: "65a3f1e2b9c8d4a7e2f10102",
-        document_type: "EAD_I766",
-        original_filename: "ead.pdf",
-        mime_type: "application/pdf",
-        size_bytes: 98114,
-        ocr_confidence: 0.91,
-        extracted_fields: {
-          card_number: "MSC2190000001",
-          category: "C09",
-          surname: "LEE",
-          given_names: "MARCUS",
-          dob: "1991-04-22",
-          country_of_birth: "USA",
-          valid_from: "2024-12-01",
-          valid_to: "2026-11-30",
-          terms: "Not valid for reentry to U.S.",
-        },
-        field_confidences: {
-          card_number: 0.96,
-          category: 0.94,
-          valid_to: 0.93,
-        },
-        checks: [
-          {
-            _id: "65a3f1e2b9c8d4a7e2f10211",
-            stage: "DOCUMENT_PROCESSING",
-            name: "ead.ocr_confidence",
-            label: "OCR confidence",
-            status: "PASS",
-            score: 0.91,
-            weight: 0.6,
-            reasons: [
-              { code: "ocr_above_threshold", text: "OCR confidence 0.91 ≥ minimum 0.65", passed: true },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f10212",
-            stage: "DOCUMENT_PROCESSING",
-            name: "ead.required_fields",
-            label: "Required fields present",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.5,
-            reasons: [
-              {
-                code: "all_required_present",
-                text: "card_number, category, and valid_to all present and OCR'd above per-field threshold.",
-                passed: true,
-              },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f10213",
-            stage: "DOCUMENT_PROCESSING",
-            name: "ead.category_valid",
-            label: "Category in allow-list",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.5,
-            reasons: [
-              {
-                code: "category_known",
-                text: "Category C09 is on the country's allowed list (A03, A05, C08, C09, C26, C36).",
-                passed: true,
-              },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f10214",
-            stage: "DOCUMENT_PROCESSING",
-            name: "ead.validity_window",
-            label: "Card validity window",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.7,
-            reasons: [
-              {
-                code: "valid_to_future",
-                text: "Card valid through 2026-11-30 — 6 months 10 days beyond today.",
-                passed: true,
-              },
-            ],
-          },
-        ],
-      },
-
-      {
-        _id: "65a3f1e2b9c8d4a7e2f10103",
-        document_type: "RESUME",
-        original_filename: "resume.pdf",
-        mime_type: "application/pdf",
-        size_bytes: 64210,
-        ocr_confidence: 0.97,
-        extracted_fields: {
-          name: "Marcus Lee",
-          email: "marcus.lee@example.com",
-          phone: "+1-415-555-0142",
-          education: [
-            { degree: "BSc Computer Science", institution: "UC Berkeley", year: 2013 },
-          ],
-          employment: [
-            { title: "Senior SWE", employer: "Acme Inc.", start: "2019-03", end: null },
-          ],
-        },
-        field_confidences: { name: 0.98, email: 0.99 },
-        checks: [
-          {
-            _id: "65a3f1e2b9c8d4a7e2f10221",
-            stage: "DOCUMENT_PROCESSING",
-            name: "resume.ocr_confidence",
-            label: "OCR confidence",
-            status: "PASS",
-            score: 0.97,
-            weight: 0.4,
-            reasons: [
-              { code: "ocr_above_threshold", text: "OCR confidence 0.97 ≥ minimum 0.65", passed: true },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f10222",
-            stage: "DOCUMENT_PROCESSING",
-            name: "resume.contact_present",
-            label: "Contact fields present",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.2,
-            reasons: [{ code: "contact_present", text: "name + email + phone all extracted.", passed: true }],
-          },
-        ],
-      },
-    ],
-
-    cross_document_checks: [
-      {
-        _id: "65a3f1e2b9c8d4a7e2f10301",
-        stage: "CROSS_DOCUMENT",
-        name: "identity.name_match",
-        label: "Name match across documents",
-        status: "PASS",
-        score: 1.0,
-        weight: 0.8,
-        documents_involved: ["passport.pdf", "ead.pdf", "resume.pdf"],
-        reasons: [
-          {
-            code: "name_exact_match",
-            text: "All three documents report 'MARCUS LEE' (case-insensitive exact match).",
-            passed: true,
-          },
-        ],
-      },
-      {
-        _id: "65a3f1e2b9c8d4a7e2f10302",
-        stage: "CROSS_DOCUMENT",
-        name: "identity.dob_match",
-        label: "Date-of-birth match",
-        status: "PASS",
-        score: 1.0,
-        weight: 0.8,
-        documents_involved: ["passport.pdf", "ead.pdf"],
-        reasons: [
-          { code: "dob_exact_match", text: "Passport and EAD both report 1991-04-22.", passed: true },
-        ],
-      },
-    ],
-
-    external_checks: [
-      {
-        _id: "65a3f1e2b9c8d4a7e2f10401",
-        stage: "EXTERNAL",
-        source: "USCIS",
-        name: "uscis.case_status",
-        label: "USCIS case status",
-        status: "PASS",
-        score: 1.0,
-        weight: 1.0,
-        reasons: [
-          {
-            code: "case_approved",
-            text: "USCIS case search for receipt 'MSC2190000001' returned status APPROVED, last updated 2025-11-20.",
-            passed: true,
-          },
-        ],
-        raw_response: {
-          receipt: "MSC2190000001",
-          status: "APPROVED",
-          last_updated: "2025-11-20",
-        },
-      },
-      {
-        _id: "65a3f1e2b9c8d4a7e2f10402",
-        stage: "EXTERNAL",
-        source: "USCIS",
-        name: "ead.category_matches_i797c",
-        label: "EAD category vs I-797C on file",
-        status: "PASS",
-        score: 1.0,
-        weight: 1.0,
-        reasons: [
-          {
-            code: "category_match",
-            text: "EAD card category C09 matches the I-797C category on file (C09).",
-            passed: true,
-          },
-        ],
-        raw_response: { card_category: "C09", i797c_category: "C09" },
-      },
-      {
-        _id: "65a3f1e2b9c8d4a7e2f10403",
-        stage: "EXTERNAL",
-        source: "E_VERIFY",
-        name: "everify.employment_eligibility",
-        label: "E-Verify employment eligibility",
-        status: "PASS",
-        score: 1.0,
-        weight: 0.9,
-        reasons: [
-          {
-            code: "employment_authorized",
-            text: "E-Verify case returned EMPLOYMENT_AUTHORIZED.",
-            passed: true,
-          },
-        ],
-        raw_response: { case_status: "EMPLOYMENT_AUTHORIZED" },
-      },
-    ],
-
-    verdict_factors: [
-      { name: "uscis.case_status", weight: 1.0, score: 1.0, contribution: 1.0 },
-      { name: "ead.category_matches_i797c", weight: 1.0, score: 1.0, contribution: 1.0 },
-      { name: "everify.employment_eligibility", weight: 0.9, score: 1.0, contribution: 0.9 },
-      { name: "passport.mrz_checksum", weight: 0.9, score: 1.0, contribution: 0.9 },
-      { name: "identity.name_match", weight: 0.8, score: 1.0, contribution: 0.8 },
-      { name: "identity.dob_match", weight: 0.8, score: 1.0, contribution: 0.8 },
-    ],
-
-    audit: [
-      {
-        _id: "65a3f1e2b9c8d4a7e2f10501",
-        at: "2026-05-20T09:14:22.000Z",
-        actor: "marcus.lee@contoso.onmicrosoft.com",
-        action: "VERIFICATION_CREATED",
-        message: "Verification submitted with 3 documents.",
-        details: { country: "US", document_count: 3 },
-      },
-      {
-        at: "2026-05-20T09:14:27.400Z",
-        actor: "system",
-        action: "STAGE_COMPLETED",
-        stage: "DOCUMENT_PROCESSING",
-        message: "Document Processing completed — 15/15 checks passed.",
-      },
-      {
-        at: "2026-05-20T09:14:29.100Z",
-        actor: "system",
-        action: "STAGE_COMPLETED",
-        stage: "CROSS_DOCUMENT",
-        message: "Cross-Document Corroboration completed — 2/2 checks passed.",
-      },
-      {
-        at: "2026-05-20T09:14:30.900Z",
-        actor: "system",
-        action: "STAGE_COMPLETED",
-        stage: "EXTERNAL",
-        message: "External Source Corroboration completed — 3/3 checks passed.",
-      },
-      {
-        at: "2026-05-20T09:14:31.300Z",
-        actor: "system",
-        action: "VERDICT_ISSUED",
-        stage: "RISK_VERDICT",
-        message: "Verdict GENUINE issued (score 0.92, escalation AUTO_APPROVE).",
-        details: { verdict: "GENUINE", risk_score: 0.92, escalation: "AUTO_APPROVE" },
-      },
-    ],
-  };
-
-  // ===========================================================================
-  // VERIFICATION 2 — REVIEW
-  //
-  //   Subject:  Priya Patel-Sharma (US passport + EAD C09 + resume).
-  //   Outcome:  every per-doc check passes; cross-doc name match is a partial
-  //             match (passport "PRIYA SHARMA" vs resume "Priya Patel-Sharma");
-  //             external checks all green. Weighted score 0.64 → REVIEW →
-  //             MEDIUM → MANUAL_REVIEW.
-  // ===========================================================================
-
-  const verificationReview = {
-    _id: "65a3f1e2b9c8d4a7e2f20001",
-    country: "US",
-    operator: {
-      email: "marcus.lee@contoso.onmicrosoft.com",
-      displayName: "Marcus Lee",
-      role: "OPERATOR",
-      objectId: "22222222-2222-2222-2222-222222222222",
-    },
-    status: "COMPLETED",
-    verdict: "REVIEW",
-    risk_level: "MEDIUM",
-    risk_score: 0.64,
-    escalation: {
-      action: "MANUAL_REVIEW",
-      label: "Manual review",
-      description:
-        "Aggregate score 0.64 lies in the REVIEW band [0.55, 0.80). Operator should resolve cross-document name discrepancy before approval.",
-    },
-    created_at: "2026-05-20T10:02:11.000Z",
-    completed_at: "2026-05-20T10:02:22.700Z",
-
-    pipeline: {
-      stages: [
+      checks: [
         {
-          name: "DOCUMENT_PROCESSING",
-          label: STAGE_LABELS.DOCUMENT_PROCESSING,
-          status: "COMPLETED",
-          started_at: "2026-05-20T10:02:11.100Z",
-          completed_at: "2026-05-20T10:02:17.500Z",
-          summary: "OCR, extraction, and per-document validation across 3 files. 14/14 checks passed.",
+          checkName: "OCR confidence above threshold",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.97,
+          reason: "OCR ran with average confidence 0.97, above the 0.65 minimum.",
         },
         {
-          name: "CROSS_DOCUMENT",
-          label: STAGE_LABELS.CROSS_DOCUMENT,
-          status: "COMPLETED",
-          started_at: "2026-05-20T10:02:17.550Z",
-          completed_at: "2026-05-20T10:02:19.800Z",
-          summary: "Identity name match flagged (partial). DOB and address consistent.",
+          checkName: "Contact information present",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.99,
+          reason: "Full name, email, and phone number all extracted from the resume.",
         },
         {
-          name: "EXTERNAL",
-          label: STAGE_LABELS.EXTERNAL,
-          status: "COMPLETED",
-          started_at: "2026-05-20T10:02:19.850Z",
-          completed_at: "2026-05-20T10:02:22.300Z",
-          summary: "USCIS, E-Verify, and I-797C category cross-reference all confirm.",
-        },
-        {
-          name: "RISK_VERDICT",
-          label: STAGE_LABELS.RISK_VERDICT,
-          status: "COMPLETED",
-          started_at: "2026-05-20T10:02:22.350Z",
-          completed_at: "2026-05-20T10:02:22.700Z",
-          summary: "Weighted aggregate 0.64 → REVIEW → manual review by operator.",
+          checkName: "Resume name matches passport name",
+          stage: "CROSS_DOCUMENT",
+          passed: true,
+          confidence: 0.98,
+          reason: "Resume name 'Marcus Lee' matches passport name 'Marcus Lee' (exact match).",
         },
       ],
     },
+  ],
+  riskScore: 12,
+  verdict: "GENUINE",
+  escalationAction: "auto-approve",
+  auditLog: [
+    { timestamp: "2026-05-25T09:14:22.000Z", actor: "operator@rts.com", action: "Submitted verification with 3 documents (PASSPORT, EAD_I766, RESUME)" },
+    { timestamp: "2026-05-25T09:14:22.100Z", actor: "system",            action: "Document Processing stage started" },
+    { timestamp: "2026-05-25T09:14:27.400Z", actor: "system",            action: "Document Processing stage completed (10/10 checks passed)" },
+    { timestamp: "2026-05-25T09:14:27.450Z", actor: "system",            action: "Cross-Document Corroboration stage started" },
+    { timestamp: "2026-05-25T09:14:29.100Z", actor: "system",            action: "Cross-Document Corroboration stage completed (2/2 checks passed)" },
+    { timestamp: "2026-05-25T09:14:29.150Z", actor: "system",            action: "External Source Corroboration stage started" },
+    { timestamp: "2026-05-25T09:14:30.900Z", actor: "system",            action: "External Source Corroboration stage completed (2/2 checks passed)" },
+    { timestamp: "2026-05-25T09:14:30.950Z", actor: "system",            action: "Risk-Based Verdicting stage started" },
+    { timestamp: "2026-05-25T09:14:31.300Z", actor: "system",            action: "Verdict GENUINE issued with risk score 12 (escalation: auto-approve)" },
+  ],
+};
 
-    documents: [
-      {
-        _id: "65a3f1e2b9c8d4a7e2f20101",
-        document_type: "PASSPORT",
-        original_filename: "passport.pdf",
-        mime_type: "application/pdf",
-        size_bytes: 152411,
-        ocr_confidence: 0.92,
-        extracted_fields: {
-          passport_number: "P7890123",
-          surname: "SHARMA",
-          given_names: "PRIYA",
-          dob: "1989-08-14",
-          sex: "F",
-          nationality: "USA",
-          issue_date: "2022-02-04",
-          expiry_date: "2032-02-04",
-          issuing_country: "USA",
-          mrz_line1: "P<USASHARMA<<PRIYA<<<<<<<<<<<<<<<<<<<<<<<<<",
-          mrz_line2: "P78901230USA8908143F3202044<<<<<<<<<<<<<<06",
-        },
-        field_confidences: {
-          passport_number: 0.95,
-          surname: 0.97,
-          given_names: 0.96,
-          dob: 0.94,
-          expiry_date: 0.93,
-        },
-        checks: [
-          {
-            _id: "65a3f1e2b9c8d4a7e2f20201",
-            stage: "DOCUMENT_PROCESSING",
-            name: "passport.ocr_confidence",
-            label: "OCR confidence",
-            status: "PASS",
-            score: 0.92,
-            weight: 0.6,
-            reasons: [
-              { code: "ocr_above_threshold", text: "OCR confidence 0.92 ≥ minimum 0.65", passed: true },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f20202",
-            stage: "DOCUMENT_PROCESSING",
-            name: "passport.required_fields",
-            label: "Required fields present",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.5,
-            reasons: [{ code: "all_required_present", text: "All 5 required fields present.", passed: true }],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f20203",
-            stage: "DOCUMENT_PROCESSING",
-            name: "passport.number_format",
-            label: "Passport number format",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.5,
-            reasons: [
-              {
-                code: "regex_match",
-                text: "Passport number 'P7890123' matches US format /^[A-Z0-9]{6,9}$/.",
-                passed: true,
-              },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f20204",
-            stage: "DOCUMENT_PROCESSING",
-            name: "passport.mrz_checksum",
-            label: "MRZ checksum",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.9,
-            reasons: [
-              { code: "mrz_checksum_valid", text: "MRZ check digits all match.", passed: true },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f20205",
-            stage: "DOCUMENT_PROCESSING",
-            name: "passport.expiry_validity",
-            label: "Expiry within validity window",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.7,
-            reasons: [
-              {
-                code: "expiry_beyond_window",
-                text: "Expires 2032-02-04 — well beyond the required 180-day forward window.",
-                passed: true,
-              },
-            ],
-          },
-        ],
-      },
+// ----- Record 2: REVIEW ------------------------------------------------------
+// Passport says NELZ KUMAR; resume says NEIL KUMAR. Same person, almost
+// certainly a nickname / transliteration variant — but the system can't
+// confirm that on its own, so cross-doc name check fails and the verdict
+// drops to REVIEW. Everything else passes; EAD category matches I-797C.
 
-      {
-        _id: "65a3f1e2b9c8d4a7e2f20102",
-        document_type: "EAD_I766",
-        original_filename: "ead.pdf",
-        mime_type: "application/pdf",
-        size_bytes: 96108,
-        ocr_confidence: 0.9,
-        extracted_fields: {
-          card_number: "MSC2200000002",
-          category: "C09",
-          surname: "SHARMA",
-          given_names: "PRIYA",
-          dob: "1989-08-14",
-          country_of_birth: "USA",
-          valid_from: "2025-01-15",
-          valid_to: "2027-01-14",
-          terms: "Not valid for reentry to U.S.",
-        },
-        field_confidences: { card_number: 0.95, category: 0.93, valid_to: 0.93 },
-        checks: [
-          {
-            _id: "65a3f1e2b9c8d4a7e2f20211",
-            stage: "DOCUMENT_PROCESSING",
-            name: "ead.ocr_confidence",
-            label: "OCR confidence",
-            status: "PASS",
-            score: 0.9,
-            weight: 0.6,
-            reasons: [
-              { code: "ocr_above_threshold", text: "OCR confidence 0.90 ≥ minimum 0.65", passed: true },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f20212",
-            stage: "DOCUMENT_PROCESSING",
-            name: "ead.required_fields",
-            label: "Required fields present",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.5,
-            reasons: [{ code: "all_required_present", text: "All required EAD fields extracted.", passed: true }],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f20213",
-            stage: "DOCUMENT_PROCESSING",
-            name: "ead.category_valid",
-            label: "Category in allow-list",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.5,
-            reasons: [
-              { code: "category_known", text: "Category C09 is on the country allow-list.", passed: true },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f20214",
-            stage: "DOCUMENT_PROCESSING",
-            name: "ead.validity_window",
-            label: "Card validity window",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.7,
-            reasons: [
-              {
-                code: "valid_to_future",
-                text: "Card valid through 2027-01-14 — 1 year 7 months beyond today.",
-                passed: true,
-              },
-            ],
-          },
-        ],
+const verificationReview = {
+  verificationId: "ver_2026_05_25_002",
+  submittedBy: "operator@rts.com",
+  country: "USA",
+  submittedAt: "2026-05-25T10:02:11.000Z",
+  documents: [
+    {
+      documentType: "PASSPORT",
+      filename: "nelz_kumar_passport.pdf",
+      extractedFields: {
+        firstName: "Nelz",
+        lastName: "Kumar",
+        passportNumber: "P7890123",
+        nationality: "USA",
+        dateOfBirth: "1989-08-14",
+        sex: "M",
+        issueDate: "2022-02-04",
+        expiryDate: "2032-02-04",
+        issuingCountry: "USA",
+        mrzLine1: "P<USAKUMAR<<NELZ<<<<<<<<<<<<<<<<<<<<<<<<<<<<",
+        mrzLine2: "P78901230USA8908143M3202044<<<<<<<<<<<<<<06",
       },
-
-      {
-        _id: "65a3f1e2b9c8d4a7e2f20103",
-        document_type: "RESUME",
-        original_filename: "resume.pdf",
-        mime_type: "application/pdf",
-        size_bytes: 71042,
-        ocr_confidence: 0.96,
-        extracted_fields: {
-          // Note the hyphenated surname here — this is what triggers the
-          // cross-document name-match WARN downstream.
-          name: "Priya Patel-Sharma",
-          email: "priya.ps@example.com",
-          phone: "+1-415-555-0199",
-          education: [
-            { degree: "MSc Statistics", institution: "Stanford University", year: 2014 },
-          ],
-        },
-        field_confidences: { name: 0.97, email: 0.98 },
-        checks: [
-          {
-            _id: "65a3f1e2b9c8d4a7e2f20221",
-            stage: "DOCUMENT_PROCESSING",
-            name: "resume.ocr_confidence",
-            label: "OCR confidence",
-            status: "PASS",
-            score: 0.96,
-            weight: 0.4,
-            reasons: [
-              { code: "ocr_above_threshold", text: "OCR confidence 0.96 ≥ minimum 0.65", passed: true },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f20222",
-            stage: "DOCUMENT_PROCESSING",
-            name: "resume.contact_present",
-            label: "Contact fields present",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.2,
-            reasons: [{ code: "contact_present", text: "name + email + phone all extracted.", passed: true }],
-          },
-        ],
-      },
-    ],
-
-    cross_document_checks: [
-      {
-        _id: "65a3f1e2b9c8d4a7e2f20301",
-        stage: "CROSS_DOCUMENT",
-        name: "identity.name_match",
-        label: "Name match across documents",
-        // This is the central reason the verdict is REVIEW.
-        status: "WARN",
-        score: 0.55,
-        weight: 0.8,
-        documents_involved: ["passport.pdf", "ead.pdf", "resume.pdf"],
-        reasons: [
-          {
-            code: "name_partial_match",
-            text:
-              "Resume name 'Priya Patel-Sharma' is a partial match for passport / EAD name 'PRIYA SHARMA'. " +
-              "Maiden / hyphenated-surname discrepancy — operator confirmation required.",
-            passed: false,
-          },
-          {
-            code: "given_name_exact",
-            text: "Given name 'PRIYA' matches exactly across all three documents.",
-            passed: true,
-          },
-        ],
-      },
-      {
-        _id: "65a3f1e2b9c8d4a7e2f20302",
-        stage: "CROSS_DOCUMENT",
-        name: "identity.dob_match",
-        label: "Date-of-birth match",
-        status: "PASS",
-        score: 1.0,
-        weight: 0.8,
-        documents_involved: ["passport.pdf", "ead.pdf"],
-        reasons: [
-          { code: "dob_exact_match", text: "Passport and EAD both report 1989-08-14.", passed: true },
-        ],
-      },
-    ],
-
-    external_checks: [
-      {
-        _id: "65a3f1e2b9c8d4a7e2f20401",
-        stage: "EXTERNAL",
-        source: "USCIS",
-        name: "uscis.case_status",
-        label: "USCIS case status",
-        status: "PASS",
-        score: 1.0,
-        weight: 1.0,
-        reasons: [
-          {
-            code: "case_approved",
-            text: "USCIS case search for receipt 'MSC2200000002' returned status APPROVED.",
-            passed: true,
-          },
-        ],
-        raw_response: { receipt: "MSC2200000002", status: "APPROVED", last_updated: "2025-12-04" },
-      },
-      {
-        _id: "65a3f1e2b9c8d4a7e2f20402",
-        stage: "EXTERNAL",
-        source: "USCIS",
-        name: "ead.category_matches_i797c",
-        label: "EAD category vs I-797C on file",
-        status: "PASS",
-        score: 1.0,
-        weight: 1.0,
-        reasons: [
-          {
-            code: "category_match",
-            text: "EAD card category C09 matches the I-797C category on file (C09).",
-            passed: true,
-          },
-        ],
-        raw_response: { card_category: "C09", i797c_category: "C09" },
-      },
-      {
-        _id: "65a3f1e2b9c8d4a7e2f20403",
-        stage: "EXTERNAL",
-        source: "E_VERIFY",
-        name: "everify.employment_eligibility",
-        label: "E-Verify employment eligibility",
-        status: "PASS",
-        score: 1.0,
-        weight: 0.9,
-        reasons: [
-          {
-            code: "employment_authorized",
-            text: "E-Verify case returned EMPLOYMENT_AUTHORIZED.",
-            passed: true,
-          },
-        ],
-        raw_response: { case_status: "EMPLOYMENT_AUTHORIZED" },
-      },
-    ],
-
-    verdict_factors: [
-      { name: "uscis.case_status", weight: 1.0, score: 1.0, contribution: 1.0 },
-      { name: "ead.category_matches_i797c", weight: 1.0, score: 1.0, contribution: 1.0 },
-      { name: "everify.employment_eligibility", weight: 0.9, score: 1.0, contribution: 0.9 },
-      { name: "passport.mrz_checksum", weight: 0.9, score: 1.0, contribution: 0.9 },
-      // The single negative-contribution signal that pulled the score into REVIEW.
-      { name: "identity.name_match", weight: 0.8, score: 0.55, contribution: 0.44 },
-      { name: "identity.dob_match", weight: 0.8, score: 1.0, contribution: 0.8 },
-    ],
-
-    audit: [
-      {
-        at: "2026-05-20T10:02:11.000Z",
-        actor: "marcus.lee@contoso.onmicrosoft.com",
-        action: "VERIFICATION_CREATED",
-        message: "Verification submitted with 3 documents.",
-        details: { country: "US", document_count: 3 },
-      },
-      {
-        at: "2026-05-20T10:02:17.500Z",
-        actor: "system",
-        action: "STAGE_COMPLETED",
-        stage: "DOCUMENT_PROCESSING",
-        message: "Document Processing completed — 14/14 checks passed.",
-      },
-      {
-        at: "2026-05-20T10:02:19.800Z",
-        actor: "system",
-        action: "STAGE_COMPLETED",
-        stage: "CROSS_DOCUMENT",
-        message:
-          "Cross-Document Corroboration completed — 1 WARN (identity.name_match), 1 PASS.",
-      },
-      {
-        at: "2026-05-20T10:02:22.300Z",
-        actor: "system",
-        action: "STAGE_COMPLETED",
-        stage: "EXTERNAL",
-        message: "External Source Corroboration completed — 3/3 checks passed.",
-      },
-      {
-        at: "2026-05-20T10:02:22.700Z",
-        actor: "system",
-        action: "VERDICT_ISSUED",
-        stage: "RISK_VERDICT",
-        message: "Verdict REVIEW issued (score 0.64, escalation MANUAL_REVIEW).",
-        details: { verdict: "REVIEW", risk_score: 0.64, escalation: "MANUAL_REVIEW" },
-      },
-    ],
-  };
-
-  // ===========================================================================
-  // VERIFICATION 3 — HIGH_RISK
-  //
-  //   Subject:  Daniel Okafor (US passport + EAD C36 + transcript).
-  //   Outcome:  per-document checks all pass (the EAD card category C36 is
-  //             correctly extracted from the card itself). The external check
-  //             against the I-797C on file is the failure: the I-797C says C09
-  //             but the card shows C36. Per spec, EAD category mismatch is a
-  //             high-weight fraud signal. Weighted score 0.32 → HIGH_RISK →
-  //             HIGH → COMPLIANCE_ESCALATION.
-  // ===========================================================================
-
-  const verificationHighRisk = {
-    _id: "65a3f1e2b9c8d4a7e2f30001",
-    country: "US",
-    operator: {
-      email: "marcus.lee@contoso.onmicrosoft.com",
-      displayName: "Marcus Lee",
-      role: "OPERATOR",
-      objectId: "22222222-2222-2222-2222-222222222222",
-    },
-    status: "COMPLETED",
-    verdict: "HIGH_RISK",
-    risk_level: "HIGH",
-    risk_score: 0.32,
-    escalation: {
-      action: "COMPLIANCE_ESCALATION",
-      label: "Escalate for compliance review",
-      description:
-        "EAD card category does not match the I-797C category on file — a high-weight fraud signal. " +
-        "Route to compliance immediately; do not approve without manual investigation.",
-    },
-    created_at: "2026-05-20T10:48:55.000Z",
-    completed_at: "2026-05-20T10:49:08.200Z",
-
-    pipeline: {
-      stages: [
+      checks: [
         {
-          name: "DOCUMENT_PROCESSING",
-          label: STAGE_LABELS.DOCUMENT_PROCESSING,
-          status: "COMPLETED",
-          started_at: "2026-05-20T10:48:55.100Z",
-          completed_at: "2026-05-20T10:49:01.900Z",
-          summary: "OCR, extraction, and per-document validation across 3 files. 14/14 checks passed.",
+          checkName: "OCR confidence above threshold",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.92,
+          reason: "OCR ran with average confidence 0.92, above the 0.65 minimum.",
         },
         {
-          name: "CROSS_DOCUMENT",
-          label: STAGE_LABELS.CROSS_DOCUMENT,
-          status: "COMPLETED",
-          started_at: "2026-05-20T10:49:01.950Z",
-          completed_at: "2026-05-20T10:49:03.700Z",
-          summary: "Identity, DOB, and address consistency confirmed across passport, EAD, and transcript.",
+          checkName: "Required fields extracted",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.95,
+          reason: "All required fields extracted: passportNumber, expiryDate, dateOfBirth, firstName, lastName.",
         },
         {
-          name: "EXTERNAL",
-          label: STAGE_LABELS.EXTERNAL,
-          status: "COMPLETED",
-          started_at: "2026-05-20T10:49:03.750Z",
-          completed_at: "2026-05-20T10:49:07.800Z",
-          summary:
-            "USCIS case APPROVED, E-Verify AUTHORIZED, but EAD card category (C36) does not match the I-797C on file (C09).",
+          checkName: "Passport number matches US format",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.99,
+          reason: "Passport number 'P7890123' matches the US format /^[A-Z0-9]{6,9}$/.",
         },
         {
-          name: "RISK_VERDICT",
-          label: STAGE_LABELS.RISK_VERDICT,
-          status: "COMPLETED",
-          started_at: "2026-05-20T10:49:07.850Z",
-          completed_at: "2026-05-20T10:49:08.200Z",
-          summary:
-            "Weighted aggregate 0.32 → HIGH_RISK → escalate for compliance review. Driver: EAD category mismatch (weight 1.0).",
+          checkName: "MRZ checksum valid",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.94,
+          reason: "All MRZ check digits match the document number, date of birth, and expiry date fields.",
+        },
+        {
+          checkName: "Expiry date within validity window",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.97,
+          reason: "Passport expires on 2032-02-04, well beyond the 180-day forward window.",
         },
       ],
     },
-
-    documents: [
-      {
-        _id: "65a3f1e2b9c8d4a7e2f30101",
-        document_type: "PASSPORT",
-        original_filename: "passport.pdf",
-        mime_type: "application/pdf",
-        size_bytes: 138229,
-        ocr_confidence: 0.93,
-        extracted_fields: {
-          passport_number: "K4456712",
-          surname: "OKAFOR",
-          given_names: "DANIEL",
-          dob: "1993-11-09",
-          sex: "M",
-          nationality: "USA",
-          issue_date: "2020-07-22",
-          expiry_date: "2030-07-21",
-          issuing_country: "USA",
-          mrz_line1: "P<USAOKAFOR<<DANIEL<<<<<<<<<<<<<<<<<<<<<<<<",
-          mrz_line2: "K44567129USA9311094M3007212<<<<<<<<<<<<<<04",
+    {
+      documentType: "EAD_I766",
+      filename: "nelz_kumar_ead.pdf",
+      extractedFields: {
+        firstName: "Nelz",
+        lastName: "Kumar",
+        cardNumber: "MSC2200000002",
+        category: "C09",
+        dateOfBirth: "1989-08-14",
+        countryOfBirth: "USA",
+        validFrom: "2025-01-15",
+        validTo: "2027-01-14",
+        terms: "Not valid for reentry to U.S.",
+      },
+      checks: [
+        {
+          checkName: "OCR confidence above threshold",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.90,
+          reason: "OCR ran with average confidence 0.90, above the 0.65 minimum.",
         },
-        field_confidences: { passport_number: 0.96, surname: 0.97, given_names: 0.96 },
-        checks: [
-          {
-            _id: "65a3f1e2b9c8d4a7e2f30201",
-            stage: "DOCUMENT_PROCESSING",
-            name: "passport.ocr_confidence",
-            label: "OCR confidence",
-            status: "PASS",
-            score: 0.93,
-            weight: 0.6,
-            reasons: [
-              { code: "ocr_above_threshold", text: "OCR confidence 0.93 ≥ minimum 0.65", passed: true },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f30202",
-            stage: "DOCUMENT_PROCESSING",
-            name: "passport.required_fields",
-            label: "Required fields present",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.5,
-            reasons: [{ code: "all_required_present", text: "All 5 required fields present.", passed: true }],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f30203",
-            stage: "DOCUMENT_PROCESSING",
-            name: "passport.number_format",
-            label: "Passport number format",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.5,
-            reasons: [
-              {
-                code: "regex_match",
-                text: "Passport number 'K4456712' matches US format /^[A-Z0-9]{6,9}$/.",
-                passed: true,
-              },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f30204",
-            stage: "DOCUMENT_PROCESSING",
-            name: "passport.mrz_checksum",
-            label: "MRZ checksum",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.9,
-            reasons: [{ code: "mrz_checksum_valid", text: "MRZ check digits all match.", passed: true }],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f30205",
-            stage: "DOCUMENT_PROCESSING",
-            name: "passport.expiry_validity",
-            label: "Expiry within validity window",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.7,
-            reasons: [
-              {
-                code: "expiry_beyond_window",
-                text: "Expires 2030-07-21 — well beyond the required 180-day forward window.",
-                passed: true,
-              },
-            ],
-          },
-        ],
-      },
-
-      {
-        _id: "65a3f1e2b9c8d4a7e2f30102",
-        document_type: "EAD_I766",
-        original_filename: "ead.pdf",
-        mime_type: "application/pdf",
-        size_bytes: 102983,
-        ocr_confidence: 0.92,
-        extracted_fields: {
-          card_number: "MSC2230000007",
-          // The card itself extracts cleanly with category C36. The fraud
-          // signal is the MISMATCH against the I-797C on file (C09) — caught
-          // in the EXTERNAL stage, not here.
-          category: "C36",
-          surname: "OKAFOR",
-          given_names: "DANIEL",
-          dob: "1993-11-09",
-          country_of_birth: "USA",
-          valid_from: "2025-03-01",
-          valid_to: "2027-02-28",
-          terms: "Not valid for reentry to U.S.",
+        {
+          checkName: "Category present and in allow-list",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.94,
+          reason: "Card category 'C09' is on the USA allow-list of EAD categories.",
         },
-        field_confidences: { card_number: 0.96, category: 0.95, valid_to: 0.94 },
-        checks: [
-          {
-            _id: "65a3f1e2b9c8d4a7e2f30211",
-            stage: "DOCUMENT_PROCESSING",
-            name: "ead.ocr_confidence",
-            label: "OCR confidence",
-            status: "PASS",
-            score: 0.92,
-            weight: 0.6,
-            reasons: [
-              { code: "ocr_above_threshold", text: "OCR confidence 0.92 ≥ minimum 0.65", passed: true },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f30212",
-            stage: "DOCUMENT_PROCESSING",
-            name: "ead.required_fields",
-            label: "Required fields present",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.5,
-            reasons: [{ code: "all_required_present", text: "All required EAD fields extracted.", passed: true }],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f30213",
-            stage: "DOCUMENT_PROCESSING",
-            name: "ead.category_valid",
-            label: "Category in allow-list",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.5,
-            reasons: [
-              {
-                code: "category_known",
-                text:
-                  "Category C36 is on the country allow-list. (NOTE: cross-reference against I-797C runs in the External stage.)",
-                passed: true,
-              },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f30214",
-            stage: "DOCUMENT_PROCESSING",
-            name: "ead.validity_window",
-            label: "Card validity window",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.7,
-            reasons: [
-              {
-                code: "valid_to_future",
-                text: "Card valid through 2027-02-28.",
-                passed: true,
-              },
-            ],
-          },
-        ],
-      },
-
-      {
-        _id: "65a3f1e2b9c8d4a7e2f30103",
-        document_type: "TRANSCRIPT",
-        original_filename: "transcript.pdf",
-        mime_type: "application/pdf",
-        size_bytes: 188340,
-        ocr_confidence: 0.89,
-        extracted_fields: {
-          candidate_name: "Daniel Okafor",
-          institution: "Georgia Institute of Technology",
-          degree: "BSc Industrial Engineering",
-          gpa: 3.71,
-          start_year: 2012,
-          graduation_year: 2016,
+        {
+          checkName: "Card validity window covers today",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.97,
+          reason: "Card valid from 2025-01-15 to 2027-01-14. Today (2026-05-25) falls within that window.",
         },
-        field_confidences: { candidate_name: 0.94, institution: 0.91, graduation_year: 0.96 },
-        checks: [
-          {
-            _id: "65a3f1e2b9c8d4a7e2f30221",
-            stage: "DOCUMENT_PROCESSING",
-            name: "transcript.ocr_confidence",
-            label: "OCR confidence",
-            status: "PASS",
-            score: 0.89,
-            weight: 0.4,
-            reasons: [
-              { code: "ocr_above_threshold", text: "OCR confidence 0.89 ≥ minimum 0.65", passed: true },
-            ],
-          },
-          {
-            _id: "65a3f1e2b9c8d4a7e2f30222",
-            stage: "DOCUMENT_PROCESSING",
-            name: "transcript.required_fields",
-            label: "Required fields present",
-            status: "PASS",
-            score: 1.0,
-            weight: 0.2,
-            reasons: [
-              {
-                code: "all_required_present",
-                text: "candidate_name, institution, and graduation_year all extracted.",
-                passed: true,
-              },
-            ],
-          },
-        ],
-      },
-    ],
-
-    cross_document_checks: [
-      {
-        _id: "65a3f1e2b9c8d4a7e2f30301",
-        stage: "CROSS_DOCUMENT",
-        name: "identity.name_match",
-        label: "Name match across documents",
-        status: "PASS",
-        score: 1.0,
-        weight: 0.8,
-        documents_involved: ["passport.pdf", "ead.pdf", "transcript.pdf"],
-        reasons: [
-          {
-            code: "name_exact_match",
-            text: "All three documents report 'DANIEL OKAFOR' (case-insensitive exact match).",
-            passed: true,
-          },
-        ],
-      },
-      {
-        _id: "65a3f1e2b9c8d4a7e2f30302",
-        stage: "CROSS_DOCUMENT",
-        name: "identity.dob_match",
-        label: "Date-of-birth match",
-        status: "PASS",
-        score: 1.0,
-        weight: 0.8,
-        documents_involved: ["passport.pdf", "ead.pdf"],
-        reasons: [
-          { code: "dob_exact_match", text: "Passport and EAD both report 1993-11-09.", passed: true },
-        ],
-      },
-    ],
-
-    external_checks: [
-      {
-        _id: "65a3f1e2b9c8d4a7e2f30401",
-        stage: "EXTERNAL",
-        source: "USCIS",
-        name: "uscis.case_status",
-        label: "USCIS case status",
-        status: "PASS",
-        score: 1.0,
-        weight: 1.0,
-        reasons: [
-          {
-            code: "case_approved",
-            text: "USCIS case search for receipt 'MSC2230000007' returned status APPROVED.",
-            passed: true,
-          },
-        ],
-        raw_response: { receipt: "MSC2230000007", status: "APPROVED", last_updated: "2026-02-11" },
-      },
-      {
-        _id: "65a3f1e2b9c8d4a7e2f30402",
-        stage: "EXTERNAL",
-        source: "USCIS",
-        name: "ead.category_matches_i797c",
-        label: "EAD category vs I-797C on file",
-        // This is the central reason the verdict is HIGH_RISK.
-        status: "FAIL",
-        score: 0.0,
-        weight: 1.0,
-        reasons: [
-          {
-            code: "category_mismatch",
-            text:
-              "EAD card category C36 does NOT match the I-797C category on file (C09). " +
-              "Per country rule, this is a high-weight fraud signal — escalate immediately.",
-            passed: false,
-          },
-        ],
-        raw_response: {
-          card_category: "C36",
-          i797c_category: "C09",
-          i797c_receipt: "MSC2230000007",
+        {
+          checkName: "EAD category matches I-797C on file",
+          stage: "CROSS_DOCUMENT",
+          passed: true,
+          confidence: 0.99,
+          reason: "EAD card category 'C09' matches the I-797C category on file ('C09').",
         },
-      },
-      {
-        _id: "65a3f1e2b9c8d4a7e2f30403",
-        stage: "EXTERNAL",
-        source: "E_VERIFY",
-        name: "everify.employment_eligibility",
-        label: "E-Verify employment eligibility",
-        status: "PASS",
-        score: 1.0,
-        weight: 0.9,
-        reasons: [
-          {
-            code: "employment_authorized",
-            text: "E-Verify case returned EMPLOYMENT_AUTHORIZED.",
-            passed: true,
-          },
-        ],
-        raw_response: { case_status: "EMPLOYMENT_AUTHORIZED" },
-      },
-    ],
-
-    verdict_factors: [
-      // The single dominant negative signal.
-      { name: "ead.category_matches_i797c", weight: 1.0, score: 0.0, contribution: 0.0 },
-      { name: "uscis.case_status", weight: 1.0, score: 1.0, contribution: 1.0 },
-      { name: "everify.employment_eligibility", weight: 0.9, score: 1.0, contribution: 0.9 },
-      { name: "passport.mrz_checksum", weight: 0.9, score: 1.0, contribution: 0.9 },
-      { name: "identity.name_match", weight: 0.8, score: 1.0, contribution: 0.8 },
-      { name: "identity.dob_match", weight: 0.8, score: 1.0, contribution: 0.8 },
-    ],
-
-    audit: [
-      {
-        at: "2026-05-20T10:48:55.000Z",
-        actor: "marcus.lee@contoso.onmicrosoft.com",
-        action: "VERIFICATION_CREATED",
-        message: "Verification submitted with 3 documents.",
-        details: { country: "US", document_count: 3 },
-      },
-      {
-        at: "2026-05-20T10:49:01.900Z",
-        actor: "system",
-        action: "STAGE_COMPLETED",
-        stage: "DOCUMENT_PROCESSING",
-        message: "Document Processing completed — 14/14 checks passed.",
-      },
-      {
-        at: "2026-05-20T10:49:03.700Z",
-        actor: "system",
-        action: "STAGE_COMPLETED",
-        stage: "CROSS_DOCUMENT",
-        message: "Cross-Document Corroboration completed — 2/2 checks passed.",
-      },
-      {
-        at: "2026-05-20T10:49:07.800Z",
-        actor: "system",
-        action: "STAGE_COMPLETED",
-        stage: "EXTERNAL",
-        message:
-          "External Source Corroboration completed — 1 FAIL (ead.category_matches_i797c), 2 PASS.",
-      },
-      {
-        at: "2026-05-20T10:49:08.200Z",
-        actor: "system",
-        action: "VERDICT_ISSUED",
-        stage: "RISK_VERDICT",
-        message: "Verdict HIGH_RISK issued (score 0.32, escalation COMPLIANCE_ESCALATION).",
-        details: {
-          verdict: "HIGH_RISK",
-          risk_score: 0.32,
-          escalation: "COMPLIANCE_ESCALATION",
-          dominant_signal: "ead.category_matches_i797c",
+        {
+          checkName: "USCIS case status APPROVED",
+          stage: "EXTERNAL",
+          passed: true,
+          confidence: 0.96,
+          reason: "USCIS case lookup for receipt 'MSC2200000002' returned status APPROVED (last updated 2025-12-04).",
         },
+        {
+          checkName: "E-Verify employment eligibility",
+          stage: "EXTERNAL",
+          passed: true,
+          confidence: 0.94,
+          reason: "E-Verify returned EMPLOYMENT_AUTHORIZED for the submitted identity.",
+        },
+        {
+          checkName: "Aggregate risk score within REVIEW band",
+          stage: "RISK_SCORING",
+          passed: true,
+          confidence: 0.88,
+          reason: "Weighted aggregate of all signals produced a risk score of 52/100, which falls in the REVIEW band (25–69). A single CROSS_DOCUMENT failure (name match) drove the score above the GENUINE ceiling.",
+        },
+      ],
+    },
+    {
+      documentType: "RESUME",
+      filename: "neil_kumar_resume.pdf",
+      extractedFields: {
+        fullName: "Neil Kumar",
+        email: "neil.kumar@example.com",
+        phone: "+1-415-555-0199",
+        education: [
+          { degree: "MSc Statistics", institution: "Stanford University", year: 2014 },
+        ],
+        employment: [
+          { title: "Data Scientist", employer: "Globex Corp.", start: "2018-07", end: null },
+        ],
       },
-    ],
-  };
+      checks: [
+        {
+          checkName: "OCR confidence above threshold",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.96,
+          reason: "OCR ran with average confidence 0.96, above the 0.65 minimum.",
+        },
+        {
+          checkName: "Contact information present",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.99,
+          reason: "Full name, email, and phone number all extracted from the resume.",
+        },
+        {
+          // This is the single failing check that drives the REVIEW verdict.
+          checkName: "Resume name matches passport name",
+          stage: "CROSS_DOCUMENT",
+          passed: false,
+          confidence: 0.86,
+          reason: "Name on resume (Neil Kumar) does not match name on passport (Nelz Kumar). Surname matches exactly but the given name differs by 1 character — likely a nickname or transliteration variant. Operator confirmation required before approval.",
+        },
+      ],
+    },
+  ],
+  riskScore: 52,
+  verdict: "REVIEW",
+  escalationAction: "manual review",
+  auditLog: [
+    { timestamp: "2026-05-25T10:02:11.000Z", actor: "operator@rts.com", action: "Submitted verification with 3 documents (PASSPORT, EAD_I766, RESUME)" },
+    { timestamp: "2026-05-25T10:02:11.100Z", actor: "system",            action: "Document Processing stage started" },
+    { timestamp: "2026-05-25T10:02:17.500Z", actor: "system",            action: "Document Processing stage completed (10/10 checks passed)" },
+    { timestamp: "2026-05-25T10:02:17.550Z", actor: "system",            action: "Cross-Document Corroboration stage started" },
+    { timestamp: "2026-05-25T10:02:19.800Z", actor: "system",            action: "Cross-Document Corroboration stage completed (1 failed, 1 passed) — name mismatch on resume" },
+    { timestamp: "2026-05-25T10:02:19.850Z", actor: "system",            action: "External Source Corroboration stage started" },
+    { timestamp: "2026-05-25T10:02:22.300Z", actor: "system",            action: "External Source Corroboration stage completed (2/2 checks passed)" },
+    { timestamp: "2026-05-25T10:02:22.350Z", actor: "system",            action: "Risk-Based Verdicting stage started" },
+    { timestamp: "2026-05-25T10:02:22.700Z", actor: "system",            action: "Verdict REVIEW issued with risk score 52 (escalation: manual review)" },
+  ],
+};
 
-  // ===========================================================================
-  // Public surface
-  //
-  // The UI never reaches into this object directly — api.js (step 2) wraps
-  // these into shapes that match the real REST responses:
-  //
-  //   listVerifications()           → GET /verifications        (summaries)
-  //   getVerification(id)           → GET /verifications/:id    (full doc)
-  //   getVerificationAudit(id)      → GET /verifications/:id/audit
-  //   listRules() / updateRules()   → GET / PUT /rules[/...]
-  // ===========================================================================
+// ----- Record 3: HIGH_RISK ---------------------------------------------------
+// Daniel Okafor. EAD card was OCR'd cleanly with category C09. The I-797C on
+// file (looked up via USCIS) shows category C36 — a high-weight fraud signal
+// per the country rule (weight 10). riskScore 78 → HIGH_RISK → escalate to
+// compliance.
 
-  const verifications = [verificationGenuine, verificationReview, verificationHighRisk];
+const verificationHighRisk = {
+  verificationId: "ver_2026_05_25_003",
+  submittedBy: "operator@rts.com",
+  country: "USA",
+  submittedAt: "2026-05-25T10:48:55.000Z",
+  documents: [
+    {
+      documentType: "PASSPORT",
+      filename: "daniel_okafor_passport.pdf",
+      extractedFields: {
+        firstName: "Daniel",
+        lastName: "Okafor",
+        passportNumber: "K4456712",
+        nationality: "USA",
+        dateOfBirth: "1993-11-09",
+        sex: "M",
+        issueDate: "2020-07-22",
+        expiryDate: "2030-07-21",
+        issuingCountry: "USA",
+        mrzLine1: "P<USAOKAFOR<<DANIEL<<<<<<<<<<<<<<<<<<<<<<<<",
+        mrzLine2: "K44567129USA9311094M3007212<<<<<<<<<<<<<<04",
+      },
+      checks: [
+        {
+          checkName: "OCR confidence above threshold",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.93,
+          reason: "OCR ran with average confidence 0.93, above the 0.65 minimum.",
+        },
+        {
+          checkName: "Required fields extracted",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.96,
+          reason: "All required fields extracted: passportNumber, expiryDate, dateOfBirth, firstName, lastName.",
+        },
+        {
+          checkName: "Passport number matches US format",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.99,
+          reason: "Passport number 'K4456712' matches the US format /^[A-Z0-9]{6,9}$/.",
+        },
+        {
+          checkName: "MRZ checksum valid",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.95,
+          reason: "All MRZ check digits match the document number, date of birth, and expiry date fields.",
+        },
+        {
+          checkName: "Expiry date within validity window",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.98,
+          reason: "Passport expires on 2030-07-21, well beyond the 180-day forward window.",
+        },
+      ],
+    },
+    {
+      documentType: "EAD_I766",
+      filename: "daniel_okafor_ead.pdf",
+      extractedFields: {
+        firstName: "Daniel",
+        lastName: "Okafor",
+        cardNumber: "MSC2230000007",
+        // The card itself was OCR'd cleanly with C09. The discrepancy isn't
+        // in the OCR — it's between this card and the I-797C the USCIS
+        // database has on file. That's why DOCUMENT_PROCESSING passes and
+        // the failure is at the CROSS_DOCUMENT stage.
+        category: "C09",
+        dateOfBirth: "1993-11-09",
+        countryOfBirth: "USA",
+        validFrom: "2025-03-01",
+        validTo: "2027-02-28",
+        terms: "Not valid for reentry to U.S.",
+      },
+      checks: [
+        {
+          checkName: "OCR confidence above threshold",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.92,
+          reason: "OCR ran with average confidence 0.92, above the 0.65 minimum.",
+        },
+        {
+          checkName: "Category present and in allow-list",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.95,
+          reason: "Card category 'C09' is on the USA allow-list of EAD categories. (Cross-reference against I-797C runs in the next stage.)",
+        },
+        {
+          checkName: "Card validity window covers today",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.97,
+          reason: "Card valid from 2025-03-01 to 2027-02-28. Today (2026-05-25) falls within that window.",
+        },
+        {
+          // This is the high-weight failing check that drives the HIGH_RISK verdict.
+          checkName: "EAD category matches I-797C on file",
+          stage: "CROSS_DOCUMENT",
+          passed: false,
+          confidence: 0.99,
+          reason: "EAD card shows category C09 but the I-797C on file (receipt 'MSC2230000007') shows category C36. This is a high-weight discrepancy — the card category should always match the underlying petition. Likely fraudulent card or stale petition data; escalate to compliance immediately.",
+        },
+        {
+          checkName: "USCIS case status APPROVED",
+          stage: "EXTERNAL",
+          passed: true,
+          confidence: 0.97,
+          reason: "USCIS case lookup for receipt 'MSC2230000007' returned status APPROVED (last updated 2026-02-11). Note: case status alone is insufficient — the category mismatch above takes precedence.",
+        },
+        {
+          checkName: "E-Verify employment eligibility",
+          stage: "EXTERNAL",
+          passed: true,
+          confidence: 0.94,
+          reason: "E-Verify returned EMPLOYMENT_AUTHORIZED for the submitted identity.",
+        },
+        {
+          checkName: "Aggregate risk score within HIGH_RISK band",
+          stage: "RISK_SCORING",
+          passed: false,
+          confidence: 0.96,
+          reason: "Weighted aggregate of all signals produced a risk score of 78/100, which falls in the HIGH_RISK band (≥70). Dominant negative signal: 'EAD category matches I-797C on file' (weight 10/10).",
+        },
+      ],
+    },
+    {
+      documentType: "RESUME",
+      filename: "daniel_okafor_resume.pdf",
+      extractedFields: {
+        fullName: "Daniel Okafor",
+        email: "daniel.okafor@example.com",
+        phone: "+1-415-555-0177",
+        education: [
+          { degree: "BSc Industrial Engineering", institution: "Georgia Institute of Technology", year: 2016 },
+        ],
+        employment: [
+          { title: "Operations Analyst", employer: "Initech LLC.", start: "2017-09", end: null },
+        ],
+      },
+      checks: [
+        {
+          checkName: "OCR confidence above threshold",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.95,
+          reason: "OCR ran with average confidence 0.95, above the 0.65 minimum.",
+        },
+        {
+          checkName: "Contact information present",
+          stage: "DOCUMENT_PROCESSING",
+          passed: true,
+          confidence: 0.99,
+          reason: "Full name, email, and phone number all extracted from the resume.",
+        },
+        {
+          checkName: "Resume name matches passport name",
+          stage: "CROSS_DOCUMENT",
+          passed: true,
+          confidence: 0.98,
+          reason: "Resume name 'Daniel Okafor' matches passport name 'Daniel Okafor' (exact match).",
+        },
+      ],
+    },
+  ],
+  riskScore: 78,
+  verdict: "HIGH_RISK",
+  escalationAction: "compliance escalation",
+  auditLog: [
+    { timestamp: "2026-05-25T10:48:55.000Z", actor: "operator@rts.com", action: "Submitted verification with 3 documents (PASSPORT, EAD_I766, RESUME)" },
+    { timestamp: "2026-05-25T10:48:55.100Z", actor: "system",            action: "Document Processing stage started" },
+    { timestamp: "2026-05-25T10:49:01.900Z", actor: "system",            action: "Document Processing stage completed (10/10 checks passed)" },
+    { timestamp: "2026-05-25T10:49:01.950Z", actor: "system",            action: "Cross-Document Corroboration stage started" },
+    { timestamp: "2026-05-25T10:49:03.700Z", actor: "system",            action: "Cross-Document Corroboration stage completed (1 failed, 1 passed) — EAD category vs I-797C mismatch" },
+    { timestamp: "2026-05-25T10:49:03.750Z", actor: "system",            action: "External Source Corroboration stage started" },
+    { timestamp: "2026-05-25T10:49:07.800Z", actor: "system",            action: "External Source Corroboration stage completed (2/2 checks passed)" },
+    { timestamp: "2026-05-25T10:49:07.850Z", actor: "system",            action: "Risk-Based Verdicting stage started" },
+    { timestamp: "2026-05-25T10:49:08.200Z", actor: "system",            action: "Verdict HIGH_RISK issued with risk score 78 (escalation: compliance escalation)" },
+  ],
+};
 
-  // ---------------------------------------------------------------------------
-  // Step-1 backward-compat shim.
-  //
-  // The previous mockData exposed `sampleVerification(id)`. api.js still calls
-  // it. Step 2 of this work reworks api.js to use the new
-  // listVerifications / getVerification / getVerificationAudit surface, at
-  // which point this shim is deleted.
-  // TODO(step-2): remove `sampleVerification` once api.js is updated.
-  // ---------------------------------------------------------------------------
-  function sampleVerification(id) {
-    return (
-      verifications.find(function (v) {
-        return v._id === id;
-      }) || verifications[0]
-    );
-  }
+// ----- Export ---------------------------------------------------------------
+// `verifications` is the canonical fixture array. api.js looks it up by
+// verificationId and clones / randomly picks from it.
 
-  window.mockData = {
-    STAGE_LABELS: STAGE_LABELS,
-    entraUsers: entraUsers,
-    rules: rules,
-    verifications: verifications,
-    sampleVerification: sampleVerification,
-  };
-})();
+export const verifications = [
+  verificationGenuine,
+  verificationReview,
+  verificationHighRisk,
+];
