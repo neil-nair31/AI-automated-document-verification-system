@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Document Verification Platform</title>
+  <link rel="stylesheet" href="./styles.css">
+  <!--
+    app.js will be wired in step 2 as:
+        <script type="module" src="./app.js"></script>
+    For step 1 (layout only) we use the tiny preview helper at the bottom of
+    this file instead. Open the page via:
+        python3 -m http.server 8080
+    so that ES module imports work once app.js lands.
+  -->
+</head>
+<body class="app">
+
+  <!-- ============================================================
+       Top bar (visible on all post-login screens). Hidden by default;
+       step 2 will toggle `hidden` from renderView().
+       ============================================================ -->
+  <header class="topbar" id="topbar" hidden>
+    <div class="topbar__inner">
+      <div class="topbar__brand">Document Verification Platform</div>
+      <div class="topbar__user">
+        <div class="topbar__user-info">
+          <span class="topbar__user-name" id="topbar-user-name">Sam Operator</span>
+          <span class="topbar__user-email" id="topbar-user-email">operator@rts.com</span>
+        </div>
+        <button type="button" class="btn btn--secondary btn--sm" id="signout-btn">
+          Sign out
+        </button>
+      </div>
+    </div>
+    <nav class="topbar__nav" aria-label="Main navigation">
+      <a class="topbar__nav-link is-active" href="#upload" data-nav="upload">Upload</a>
+      <a class="topbar__nav-link" href="#rules" data-nav="rules" hidden>Rules</a>
+    </nav>
+  </header>
+
+  <!-- ============================================================
+       Step-1 preview banner. Removed in step 2 alongside the preview
+       <script> helper at the bottom of this file.
+       ============================================================ -->
+  <div class="preview-banner" id="preview-banner">
+    <strong>Layout preview — step 1 of 3, no logic wired yet.</strong>
+    Switch view:
+    <a href="?view=login">Login</a> ·
+    <a href="?view=upload">Upload</a> ·
+    <a href="?view=rules">Rules placeholder</a> ·
+    <a href="?view=result">Result placeholder</a>
+  </div>
+
+  <!-- ============================================================
+       View: Login (#login)
+       ============================================================ -->
+  <main class="view view--login" id="view-login">
+    <div class="card card--auth" role="region" aria-labelledby="login-title">
+      <h1 class="card__title" id="login-title">Sign in</h1>
+      <p class="card__lede">
+        Access the Document Verification Platform with your Microsoft account.
+      </p>
+
+      <button type="button" class="btn-ms" id="login-btn">
+        <span class="btn-ms__logo" aria-hidden="true">
+          <!--
+            Microsoft four-square logo. Per Microsoft brand guidelines:
+            four 9x9 squares on a 21x21 grid with a 1px gap between them.
+              red    #F25022
+              green  #7FBA00
+              blue   #00A4EF
+              yellow #FFB900
+          -->
+          <svg viewBox="0 0 21 21" width="20" height="20" role="img" aria-label="Microsoft logo">
+            <rect x="1"  y="1"  width="9" height="9" fill="#F25022"/>
+            <rect x="11" y="1"  width="9" height="9" fill="#7FBA00"/>
+            <rect x="1"  y="11" width="9" height="9" fill="#00A4EF"/>
+            <rect x="11" y="11" width="9" height="9" fill="#FFB900"/>
+          </svg>
+        </span>
+        <span class="btn-ms__label">Sign in with Microsoft</span>
+      </button>
+
+      <p class="login-error" id="login-error" role="alert" hidden></p>
+
+      <!-- DEV ONLY: remove when real Entra is wired -->
+      <div class="dev-roleswitcher" aria-label="Developer role switcher">
+        <label class="dev-roleswitcher__label" for="dev-role">
+          Sign in as <span class="dev-roleswitcher__tag">dev-only</span>
+        </label>
+        <select class="dev-roleswitcher__select" id="dev-role">
+          <option value="ADMIN">Admin</option>
+          <option value="OPERATOR" selected>Operator</option>
+        </select>
+        <p class="dev-roleswitcher__hint">
+          Removed once Entra is wired &mdash; see <code>USE_MOCK_AUTH</code> in
+          <code>api.js</code>.
+        </p>
+      </div>
+    </div>
+  </main>
+
+  <!-- ============================================================
+       View: Upload (#upload)
+       ============================================================ -->
+  <main class="view view--upload" id="view-upload" hidden>
+    <div class="page">
+      <header class="page__head">
+        <h1 class="page__title">New verification</h1>
+        <p class="page__lede">
+          Upload the candidate's documents. Tag each file with its document type,
+          then submit.
+        </p>
+      </header>
+
+      <form class="upload-form" id="upload-form" novalidate>
+
+        <!-- 1. Country ----------------------------------------- -->
+        <section class="card">
+          <div class="card__head">
+            <h2 class="card__title">1. Country</h2>
+            <p class="card__lede">Country rules drive which checks run.</p>
+          </div>
+          <div class="field">
+            <label class="field__label" for="upload-country">Country</label>
+            <select class="field__control" id="upload-country" name="country" required>
+              <option value="" selected disabled>Select a country&hellip;</option>
+              <option value="USA">United States of America</option>
+              <option value="India">India</option>
+            </select>
+            <p class="field__error" id="upload-country-error" hidden></p>
+          </div>
+        </section>
+
+        <!-- 2. Add files --------------------------------------- -->
+        <section class="card">
+          <div class="card__head">
+            <h2 class="card__title">2. Documents</h2>
+            <p class="card__lede">PDF, PNG, JPEG, or TIFF. Multiple files allowed.</p>
+          </div>
+
+          <div class="dropzone" id="dropzone">
+            <p class="dropzone__hint">
+              Drag files here, or
+            </p>
+            <label class="btn btn--secondary" for="upload-files-input">
+              Add files
+            </label>
+            <input type="file" id="upload-files-input" multiple
+                   accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff" hidden>
+          </div>
+        </section>
+
+        <!-- 3. Tag each file ----------------------------------- -->
+        <!--
+          The list is empty in step 1. Step 3 populates it from app state.
+          The commented row below is the template the renderer will use;
+          kept here so reviewers can see what the steady-state layout looks
+          like without running the JS.
+        -->
+        <section class="card" id="files-card" hidden>
+          <div class="card__head">
+            <h2 class="card__title">3. Tag each document</h2>
+            <p class="card__lede">Every file needs a document type before submission.</p>
+          </div>
+
+          <ul class="filelist" id="filelist" role="list"></ul>
+          <p class="filelist__error" id="filelist-error" hidden></p>
+        </section>
+
+        <!-- Preview-only stand-in row so the row layout is visible in step 1.
+             Removed in step 3 when the real renderer takes over. -->
+        <section class="card" id="files-card-preview" hidden>
+          <div class="card__head">
+            <h2 class="card__title">3. Tag each document</h2>
+            <p class="card__lede">Every file needs a document type before submission.</p>
+          </div>
+          <ul class="filelist" role="list">
+            <li class="filelist__row">
+              <span class="filelist__name">marcus_lee_passport.pdf</span>
+              <select class="filelist__type" aria-label="Document type for marcus_lee_passport.pdf">
+                <option value="" selected disabled>Type&hellip;</option>
+                <option value="PASSPORT" selected>Passport</option>
+                <option value="EAD_I766">EAD (I-766)</option>
+                <option value="DRIVERS_LICENSE">Driver's licence</option>
+                <option value="RESUME">Résumé</option>
+                <option value="DEGREE">Degree</option>
+              </select>
+              <button type="button" class="filelist__remove">Remove</button>
+            </li>
+            <li class="filelist__row filelist__row--invalid">
+              <span class="filelist__name">scan_002.pdf</span>
+              <select class="filelist__type" aria-label="Document type for scan_002.pdf">
+                <option value="" selected disabled>Type&hellip;</option>
+                <option value="PASSPORT">Passport</option>
+                <option value="EAD_I766">EAD (I-766)</option>
+                <option value="DRIVERS_LICENSE">Driver's licence</option>
+                <option value="RESUME">Résumé</option>
+                <option value="DEGREE">Degree</option>
+              </select>
+              <button type="button" class="filelist__remove">Remove</button>
+              <span class="filelist__rowerror">Type required</span>
+            </li>
+            <li class="filelist__row">
+              <span class="filelist__name">marcus_lee_resume.pdf</span>
+              <select class="filelist__type" aria-label="Document type for marcus_lee_resume.pdf">
+                <option value="" selected disabled>Type&hellip;</option>
+                <option value="PASSPORT">Passport</option>
+                <option value="EAD_I766">EAD (I-766)</option>
+                <option value="DRIVERS_LICENSE">Driver's licence</option>
+                <option value="RESUME" selected>Résumé</option>
+                <option value="DEGREE">Degree</option>
+              </select>
+              <button type="button" class="filelist__remove">Remove</button>
+            </li>
+          </ul>
+        </section>
+
+        <!-- 4. Submit ------------------------------------------ -->
+        <section class="card card--submit">
+          <button type="submit" class="btn btn--primary btn--lg" id="submit-btn" disabled>
+            Submit verification
+          </button>
+          <p class="submit-hint" id="submit-hint">
+            Pick a country and add at least one tagged file to enable submission.
+          </p>
+        </section>
+      </form>
+    </div>
+  </main>
+
+  <!-- ============================================================
+       View: Result placeholder (#result/{id})
+       Full result UI is tomorrow's work; today we just hand the ID off.
+       ============================================================ -->
+  <main class="view view--result" id="view-result" hidden>
+    <div class="page">
+      <header class="page__head">
+        <h1 class="page__title">Verification result</h1>
+        <p class="page__lede">
+          Verification ID:
+          <code class="result-id" id="result-id">&mdash;</code>
+        </p>
+      </header>
+      <div class="card card--placeholder">
+        <p class="card__placeholder-title">Result view renders here tomorrow.</p>
+        <p class="card__lede">
+          Today's hand-off ends at storing the verification ID in
+          <code>appState.currentVerificationId</code> and surfacing it in the URL hash.
+        </p>
+      </div>
+    </div>
+  </main>
+
+  <!-- ============================================================
+       View: Rules placeholder (#rules)
+       ADMIN-only. Full editor lands on Day 4.
+       ============================================================ -->
+  <main class="view view--rules" id="view-rules" hidden>
+    <div class="page">
+      <header class="page__head">
+        <h1 class="page__title">Country rules</h1>
+        <p class="page__lede">
+          Configure which checks run per country and how heavily each one is weighted.
+        </p>
+      </header>
+      <div class="card card--placeholder">
+        <p class="card__placeholder-title">Rules editor renders here on Day 4.</p>
+        <p class="card__lede">
+          ADMIN-only; OPERATOR will see read-only and is redirected here from
+          <code>renderView()</code> if they try to reach <code>#rules</code> directly.
+        </p>
+      </div>
+    </div>
+  </main>
+
+  <!-- ============================================================
+       TEMPORARY step-1 preview helper.
+       Deleted in step 2 once app.js owns view routing.
+       ============================================================ -->
+  <script>
+    (function () {
+      const params = new URLSearchParams(location.search);
+      const view = params.get("view") || "login";
+      const views = ["login", "upload", "result", "rules"];
+      for (const v of views) {
+        const el = document.getElementById("view-" + v);
+        if (el) el.hidden = v !== view;
+      }
+      document.getElementById("topbar").hidden = (view === "login");
+      document.querySelectorAll(".topbar__nav-link").forEach(function (a) {
+        a.classList.toggle("is-active", a.dataset.nav === view);
+      });
+      // Preview pretends Admin so the Rules nav link is visible.
+      const rulesNav = document.querySelector('[data-nav="rules"]');
+      if (rulesNav) rulesNav.hidden = false;
+      // Preview pretends the file list has content so reviewers see the row layout.
+      if (view === "upload") {
+        document.getElementById("files-card-preview").hidden = false;
+      }
+      if (view === "result") {
+        document.getElementById("result-id").textContent = "ver_2026_05_25_001";
+      }
+    })();
+  </script>
+</body>
+</html>
