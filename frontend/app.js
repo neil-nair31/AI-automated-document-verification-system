@@ -123,7 +123,7 @@ async function renderView(name, params = []) {
     case "login": resetLoginView(); break;
     case "upload": renderUploadView(); break;
     case "result": await renderResultView(params[0]); break;
-    // rules view renderer is wired in the next commit.
+    case "rules": await renderRulesView(); break;
   }
 }
 
@@ -779,6 +779,266 @@ function svgCross() {
 }
 function svgWarning() {
   return `<svg viewBox="0 0 16 16" width="20" height="20"><path d="M8 1 L15 14 L1 14 Z" fill="#D99A23"/><path d="M8 5.5 L8 9.5" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.8" r="0.9" fill="#FFFFFF"/></svg>`;
+}
+
+// ===========================================================================
+// Rules view (ADMIN only — RBAC enforced upstream in onHashChange)
+// ===========================================================================
+
+const SEVERITY_OPTIONS = ["low", "medium", "high"];
+
+async function renderRulesView() {
+  if (!appState.rulesEdit) appState.rulesEdit = createEmptyRulesEdit();
+  rerenderRulesShell();
+  // Initial render fetches from the backend; subsequent re-renders (edit /
+  // save / cancel) reuse the in-memory rules without a network call.
+  await loadRules(appState.rulesEdit.country);
+}
+
+function rerenderRulesShell() {
+  const root = document.getElementById("view-rules");
+  root.innerHTML = `
+    <div class="page page--wide">
+      ${renderRulesHeader()}
+      <div id="rules-message" class="rules-message" hidden></div>
+      <div id="rules-table-wrap"></div>
+    </div>
+  `;
+  wireRulesControls();
+  renderRulesTable();
+}
+
+function createEmptyRulesEdit() {
+  return { country: "USA", rules: [], editing: false, dirty: false, snapshot: null };
+}
+
+function renderRulesHeader() {
+  const r = appState.rulesEdit;
+  return `
+    <header class="page__head">
+      <h1 class="page__title">Country rules</h1>
+      <p class="page__lede">Configure which checks run per country and how heavily each one is weighted. Edits require ADMIN.</p>
+    </header>
+    <div class="rules-controls">
+      <div class="field rules-controls__country">
+        <label class="field__label" for="rules-country">Country</label>
+        <select class="field__control" id="rules-country">
+          <option value="USA" ${r.country === "USA" ? "selected" : ""}>United States of America</option>
+          <option value="India" ${r.country === "India" ? "selected" : ""}>India</option>
+        </select>
+      </div>
+      <div class="rules-controls__actions">
+        ${r.editing
+          ? `<button type="button" id="rules-save-btn" class="btn btn--primary">Save changes</button>
+             <button type="button" id="rules-cancel-btn" class="btn btn--secondary">Cancel</button>`
+          : `<button type="button" id="rules-edit-btn" class="btn btn--primary">Edit rules</button>`}
+      </div>
+    </div>
+  `;
+}
+
+function wireRulesControls() {
+  document.getElementById("rules-country").addEventListener("change", onRulesCountryChange);
+  const editBtn = document.getElementById("rules-edit-btn");
+  if (editBtn) editBtn.addEventListener("click", enterRulesEditMode);
+  const saveBtn = document.getElementById("rules-save-btn");
+  if (saveBtn) saveBtn.addEventListener("click", saveRulesEdit);
+  const cancelBtn = document.getElementById("rules-cancel-btn");
+  if (cancelBtn) cancelBtn.addEventListener("click", cancelRulesEdit);
+}
+
+async function loadRules(country) {
+  appState.rulesEdit.country = country;
+  appState.rulesEdit.rules = await api.getRules(country);
+  appState.rulesEdit.editing = false;
+  appState.rulesEdit.dirty = false;
+  appState.rulesEdit.snapshot = null;
+  renderRulesTable();
+}
+
+function renderRulesTable() {
+  const wrap = document.getElementById("rules-table-wrap");
+  if (!wrap) return;
+  const r = appState.rulesEdit;
+  if (r.rules.length === 0) {
+    wrap.innerHTML = `<div class="card"><p class="kv-empty">No rules configured for ${escapeHtml(r.country)}.</p></div>`;
+    return;
+  }
+  wrap.innerHTML = `
+    <div class="rules-table-wrap">
+      <table class="rules-table">
+        <thead>
+          <tr>
+            <th>Document Type</th>
+            <th>Check Name</th>
+            <th>Weight</th>
+            <th>Severity</th>
+            <th>Enabled</th>
+          </tr>
+        </thead>
+        <tbody>${r.rules.map((rule, idx) => renderRulesRow(rule, idx, r.editing)).join("")}</tbody>
+      </table>
+    </div>
+  `;
+  if (r.editing) wireRulesRowInputs();
+}
+
+function renderRulesRow(rule, idx, editing) {
+  const weightCell = editing
+    ? `<input type="number" min="1" max="10" step="1" inputmode="numeric"
+              class="rules-input rules-input--weight" data-idx="${idx}" data-field="weight"
+              value="${escapeHtml(String(rule.weight))}" aria-label="Weight for ${escapeHtml(rule.checkName)}">
+       <span class="rules-input__error" data-idx="${idx}" hidden></span>`
+    : `<span class="rules-cell--weight">${escapeHtml(String(rule.weight))}</span>`;
+
+  const sevCell = editing
+    ? `<select class="rules-input rules-input--severity" data-idx="${idx}" data-field="severity"
+               aria-label="Severity for ${escapeHtml(rule.checkName)}">
+         ${SEVERITY_OPTIONS.map((s) => `<option value="${s}" ${rule.severity === s ? "selected" : ""}>${s}</option>`).join("")}
+       </select>`
+    : `<span class="severity-pill severity-pill--${escapeHtml(rule.severity)}">${escapeHtml(rule.severity)}</span>`;
+
+  const enabledCell = editing
+    ? `<input type="checkbox" class="rules-input rules-input--enabled" data-idx="${idx}" data-field="enabled"
+              ${rule.enabled ? "checked" : ""} aria-label="Enabled for ${escapeHtml(rule.checkName)}">`
+    : `<span class="rules-cell--enabled ${rule.enabled ? "is-on" : "is-off"}">${rule.enabled ? "Yes" : "No"}</span>`;
+
+  return `
+    <tr data-rule-id="${escapeHtml(rule.ruleId)}">
+      <td><span class="doctype-tag">${escapeHtml(formatDocType(rule.documentType))}</span></td>
+      <td>${escapeHtml(rule.checkName)}</td>
+      <td>${weightCell}</td>
+      <td>${sevCell}</td>
+      <td>${enabledCell}</td>
+    </tr>
+  `;
+}
+
+function wireRulesRowInputs() {
+  for (const inp of document.querySelectorAll(".rules-input")) {
+    const evt = inp.type === "checkbox" || inp.tagName === "SELECT" ? "change" : "input";
+    inp.addEventListener(evt, onRulesInputChange);
+  }
+}
+
+function onRulesInputChange(e) {
+  const r = appState.rulesEdit;
+  const idx = Number(e.target.dataset.idx);
+  const field = e.target.dataset.field;
+  if (field === "weight") {
+    applyWeightEdit(e.target, idx);
+  } else if (field === "severity") {
+    r.rules[idx].severity = e.target.value;
+  } else if (field === "enabled") {
+    r.rules[idx].enabled = e.target.checked;
+  }
+  r.dirty = true;
+  refreshRulesSaveButton();
+}
+
+function applyWeightEdit(input, idx) {
+  const r = appState.rulesEdit;
+  const raw = input.value.trim();
+  const n = Number(raw);
+  const isValid = raw !== "" && Number.isFinite(n) && Number.isInteger(n) && n >= 1 && n <= 10;
+  const errEl = document.querySelector(`.rules-input__error[data-idx="${idx}"]`);
+  if (isValid) {
+    r.rules[idx].weight = n;
+    input.classList.remove("rules-input--invalid");
+    if (errEl) errEl.hidden = true;
+  } else {
+    // Store the raw text so the input reflects what the user typed, but flag
+    // invalid so the save button stays disabled until they fix it.
+    r.rules[idx].weight = raw;
+    input.classList.add("rules-input--invalid");
+    if (errEl) { errEl.textContent = "Weight must be a whole number 1–10"; errEl.hidden = false; }
+  }
+}
+
+function refreshRulesSaveButton() {
+  const btn = document.getElementById("rules-save-btn");
+  if (!btn) return;
+  btn.disabled = hasInvalidWeights();
+}
+
+function hasInvalidWeights() {
+  return appState.rulesEdit.rules.some((rule) =>
+    !Number.isInteger(rule.weight) || rule.weight < 1 || rule.weight > 10
+  );
+}
+
+async function onRulesCountryChange(e) {
+  const r = appState.rulesEdit;
+  const next = e.target.value;
+  if (r.editing && r.dirty) {
+    const ok = window.confirm("Discard unsaved changes?");
+    if (!ok) {
+      e.target.value = r.country;
+      return;
+    }
+  }
+  showRulesMessage(null);
+  await loadRules(next);
+}
+
+function enterRulesEditMode() {
+  const r = appState.rulesEdit;
+  r.snapshot = JSON.parse(JSON.stringify(r.rules));
+  r.editing = true;
+  r.dirty = false;
+  showRulesMessage(null);
+  rerenderRulesShell();
+}
+
+function cancelRulesEdit() {
+  const r = appState.rulesEdit;
+  if (r.snapshot) r.rules = r.snapshot;
+  r.snapshot = null;
+  r.editing = false;
+  r.dirty = false;
+  showRulesMessage(null);
+  rerenderRulesShell();
+}
+
+async function saveRulesEdit() {
+  const r = appState.rulesEdit;
+  // Defensive: save button is disabled when invalid but keyboard Enter on a
+  // weight field could still trigger via form-default. Re-validate here.
+  if (hasInvalidWeights()) {
+    showRulesMessage("Fix invalid weights before saving.", "error");
+    return;
+  }
+  try {
+    const saved = await api.updateRules(r.country, r.rules);
+    r.rules = saved;
+    r.snapshot = null;
+    r.editing = false;
+    r.dirty = false;
+    rerenderRulesShell();
+    showRulesMessage(`Rules for ${r.country} saved.`, "success");
+  } catch (err) {
+    // Defense in depth: api.updateRules throws if the current user isn't
+    // ADMIN. Surface the error inline rather than silently swallowing.
+    showRulesMessage(err.message || "Save failed.", "error");
+  }
+}
+
+function showRulesMessage(text, kind) {
+  // queueMicrotask because renderRulesView may have just replaced the DOM and
+  // the new #rules-message element isn't in the tree yet.
+  queueMicrotask(() => {
+    const el = document.getElementById("rules-message");
+    if (!el) return;
+    if (!text) {
+      el.hidden = true;
+      el.textContent = "";
+      el.className = "rules-message";
+      return;
+    }
+    el.textContent = text;
+    el.className = `rules-message rules-message--${kind || "info"}`;
+    el.hidden = false;
+  });
 }
 
 // ===========================================================================
