@@ -217,19 +217,236 @@ function hideLoginError() {
 }
 
 // ===========================================================================
-// Upload view — wiring shell. Filled out in the next commit.
+// Upload view
 // ===========================================================================
 
+const DOC_TYPE_OPTIONS = [
+  { value: "PASSPORT", label: "Passport" },
+  { value: "EAD_I766", label: "Work Permit / EAD" },
+  { value: "DRIVERS_LICENSE", label: "Driver's License" },
+  { value: "RESUME", label: "Résumé" },
+  { value: "DEGREE", label: "Degree" },
+];
+
+let _uploadFileCounter = 0;
+
 function wireUpload() {
-  // Wired in commit C.
+  document.getElementById("upload-country").addEventListener("change", onCountryChange);
+  document.getElementById("upload-files-input").addEventListener("change", onFileInputChange);
+  document.getElementById("upload-form").addEventListener("submit", onUploadSubmit);
+  wireDropzone();
+}
+
+function wireDropzone() {
+  const dz = document.getElementById("dropzone");
+  for (const evt of ["dragenter", "dragover"]) {
+    dz.addEventListener(evt, (e) => { e.preventDefault(); dz.classList.add("is-dragover"); });
+  }
+  for (const evt of ["dragleave", "drop"]) {
+    dz.addEventListener(evt, (e) => { e.preventDefault(); dz.classList.remove("is-dragover"); });
+  }
+  dz.addEventListener("drop", (e) => {
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (files.length) addUploadFiles(files.map((f) => f.name));
+  });
+}
+
+function onCountryChange(e) {
+  appState.uploadForm.country = e.target.value;
+  clearFieldError("upload-country-error");
+  refreshSubmitButton();
+}
+
+function onFileInputChange(e) {
+  const files = Array.from(e.target.files || []);
+  if (files.length) addUploadFiles(files.map((f) => f.name));
+  // Reset the input so the user can re-add a file with the same name later.
+  e.target.value = "";
+}
+
+function addUploadFiles(filenames) {
+  for (const name of filenames) {
+    appState.uploadForm.files.push({
+      id: `f${++_uploadFileCounter}`,
+      filename: name,
+      documentType: "",
+    });
+  }
+  renderUploadFiles();
+  refreshSubmitButton();
+}
+
+function removeUploadFile(id) {
+  appState.uploadForm.files = appState.uploadForm.files.filter((f) => f.id !== id);
+  renderUploadFiles();
+  refreshSubmitButton();
+}
+
+function setUploadFileType(id, type) {
+  const file = appState.uploadForm.files.find((f) => f.id === id);
+  if (file) file.documentType = type;
+  renderUploadFiles();
+  refreshSubmitButton();
 }
 
 function renderUploadView() {
-  // Wired in commit C.
+  // Restore visible state from appState (so back-button to #upload is
+  // consistent with whatever the user had picked).
+  document.getElementById("upload-country").value = appState.uploadForm.country || "";
+  renderUploadFiles();
+  refreshSubmitButton();
 }
 
 function resetUploadView() {
-  // Wired in commit C.
+  document.getElementById("upload-country").value = "";
+  document.getElementById("filelist").innerHTML = "";
+  document.getElementById("files-card").hidden = true;
+  clearFieldError("upload-country-error");
+  hideFilelistError();
+  const btn = document.getElementById("submit-btn");
+  btn.disabled = true;
+  btn.textContent = "Submit verification";
+  document.getElementById("submit-hint").textContent =
+    "Pick a country and add at least one tagged file to enable submission.";
+}
+
+function renderUploadFiles() {
+  const list = document.getElementById("filelist");
+  const card = document.getElementById("files-card");
+  const files = appState.uploadForm.files;
+  if (files.length === 0) {
+    list.innerHTML = "";
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  const dupTypes = computeDuplicateTypes(files);
+  list.innerHTML = files.map((f) => renderUploadFileRow(f, dupTypes)).join("");
+  for (const row of list.querySelectorAll(".filelist__row")) {
+    const id = row.dataset.fileId;
+    row.querySelector(".filelist__type").addEventListener("change", (e) => setUploadFileType(id, e.target.value));
+    row.querySelector(".filelist__remove").addEventListener("click", () => removeUploadFile(id));
+  }
+}
+
+function computeDuplicateTypes(files) {
+  const counts = {};
+  for (const f of files) {
+    if (f.documentType) counts[f.documentType] = (counts[f.documentType] || 0) + 1;
+  }
+  return new Set(Object.keys(counts).filter((t) => counts[t] > 1));
+}
+
+function renderUploadFileRow(file, dupTypes) {
+  const missing = !file.documentType;
+  const duplicate = file.documentType && dupTypes.has(file.documentType);
+  const rowClass = ["filelist__row", missing ? "filelist__row--invalid" : "", duplicate ? "filelist__row--warn" : ""].filter(Boolean).join(" ");
+  const optionsHtml = DOC_TYPE_OPTIONS.map((opt) =>
+    `<option value="${escapeHtml(opt.value)}" ${file.documentType === opt.value ? "selected" : ""}>${escapeHtml(opt.label)}</option>`
+  ).join("");
+  return `
+    <li class="${rowClass}" data-file-id="${escapeHtml(file.id)}">
+      <span class="filelist__name">${escapeHtml(file.filename)}</span>
+      <select class="filelist__type" aria-label="Document type for ${escapeHtml(file.filename)}">
+        <option value="" ${file.documentType ? "" : "selected"} disabled>Type…</option>
+        ${optionsHtml}
+      </select>
+      <button type="button" class="filelist__remove" aria-label="Remove ${escapeHtml(file.filename)}">Remove</button>
+      ${missing ? `<span class="filelist__rowerror">Type required</span>` : ""}
+      ${duplicate ? `<span class="filelist__rowwarn">Multiple files tagged as same type</span>` : ""}
+    </li>
+  `;
+}
+
+function refreshSubmitButton() {
+  const { country, files, submitting } = appState.uploadForm;
+  const allTagged = files.length > 0 && files.every((f) => f.documentType);
+  const canSubmit = country && allTagged && !submitting;
+  const btn = document.getElementById("submit-btn");
+  btn.disabled = !canSubmit;
+
+  const hint = document.getElementById("submit-hint");
+  if (canSubmit) {
+    const fileWord = files.length === 1 ? "file" : "files";
+    hint.textContent = `${files.length} ${fileWord} ready. Click Submit to run verification.`;
+  } else if (!country && files.length === 0) {
+    hint.textContent = "Pick a country and add at least one tagged file to enable submission.";
+  } else if (!country) {
+    hint.textContent = "Pick a country to enable submission.";
+  } else if (files.length === 0) {
+    hint.textContent = "Add at least one file to enable submission.";
+  } else {
+    const untagged = files.filter((f) => !f.documentType).length;
+    const fileWord = untagged === 1 ? "file" : "files";
+    hint.textContent = `${untagged} ${fileWord} still missing a document type.`;
+  }
+}
+
+async function onUploadSubmit(e) {
+  e.preventDefault();
+  // Defensive: refreshSubmitButton already disables the button when invalid,
+  // but if a user hits Enter on a form field the submit can fire anyway.
+  if (appState.uploadForm.submitting) return;
+
+  const { country, files } = appState.uploadForm;
+  let valid = true;
+  hideFilelistError();
+  clearFieldError("upload-country-error");
+
+  if (!country) {
+    showFieldError("upload-country-error", "Please select a country before submitting.");
+    valid = false;
+  }
+  const untagged = files.filter((f) => !f.documentType);
+  if (untagged.length > 0) {
+    const word = untagged.length === 1 ? "file is" : "files are";
+    showFilelistError(`${untagged.length} ${word} missing a document type. Tag every file before submitting.`);
+    renderUploadFiles(); // re-render so the row markers update
+    valid = false;
+  }
+  if (!valid) return;
+
+  appState.uploadForm.submitting = true;
+  refreshSubmitButton();
+  const btn = document.getElementById("submit-btn");
+  btn.textContent = "Submitting…";
+
+  try {
+    const payload = {
+      country,
+      files: files.map(({ filename, documentType }) => ({ filename, documentType })),
+    };
+    const result = await api.submitVerification(payload);
+    appState.currentVerificationId = result.verificationId;
+    // renderView() resets uploadForm when leaving #upload, so back-button
+    // here lands the user on a fresh upload form rather than the stale one.
+    setHash("result", result.verificationId);
+  } catch (err) {
+    showFilelistError(err.message || "Submission failed. Please try again.");
+    appState.uploadForm.submitting = false;
+    btn.textContent = "Submit verification";
+    refreshSubmitButton();
+  }
+}
+
+function showFieldError(id, msg) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.hidden = false;
+}
+function clearFieldError(id) {
+  const el = document.getElementById(id);
+  if (el) { el.textContent = ""; el.hidden = true; }
+}
+function showFilelistError(msg) {
+  const el = document.getElementById("filelist-error");
+  el.textContent = msg;
+  el.hidden = false;
+}
+function hideFilelistError() {
+  const el = document.getElementById("filelist-error");
+  if (el) { el.textContent = ""; el.hidden = true; }
 }
 
 // ===========================================================================

@@ -508,6 +508,16 @@ a:focus-visible,
   color: var(--c-danger);
   margin-top: 2px;
 }
+.filelist__row--warn {
+  border-color: #E9C97A;
+  background: var(--c-warn-bg);
+}
+.filelist__rowwarn {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: #8A6310;
+  margin-top: 2px;
+}
 .filelist__error {
   margin: var(--space-3) 0 0;
   font-size: 13px;
