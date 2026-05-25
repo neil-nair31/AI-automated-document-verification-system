@@ -122,7 +122,8 @@ async function renderView(name, params = []) {
   switch (name) {
     case "login": resetLoginView(); break;
     case "upload": renderUploadView(); break;
-    // result + rules views' renderers are wired in later commits.
+    case "result": await renderResultView(params[0]); break;
+    // rules view renderer is wired in the next commit.
   }
 }
 
@@ -450,6 +451,337 @@ function hideFilelistError() {
 }
 
 // ===========================================================================
+// Result view
+// ===========================================================================
+
+async function renderResultView(verificationId) {
+  const root = document.getElementById("view-result");
+  root.innerHTML = `<div class="page page--wide"><div class="result-loading">Loading verification…</div></div>`;
+
+  if (!verificationId) {
+    root.innerHTML = renderResultNotFound("(no id in URL)");
+    return;
+  }
+
+  let verification;
+  try {
+    verification = await api.getVerification(verificationId);
+  } catch (err) {
+    root.innerHTML = renderResultNotFound(err.message || verificationId);
+    return;
+  }
+
+  if (!verification) {
+    root.innerHTML = renderResultNotFound(verificationId);
+    return;
+  }
+
+  appState.currentVerificationId = verification.verificationId;
+  root.innerHTML = `
+    <div class="page page--wide">
+      ${renderResultHeader(verification)}
+      ${renderVerdictPanel(verification)}
+      ${renderPipelineStrip(verification)}
+      ${renderDocumentsSection(verification)}
+      ${renderAuditLog(verification)}
+    </div>
+  `;
+}
+
+function renderResultNotFound(idOrMessage) {
+  return `
+    <div class="page page--wide">
+      <div class="card result-notfound">
+        <h2 class="result-notfound__title">Verification not found</h2>
+        <p class="result-notfound__hint">No verification matches the ID <code>${escapeHtml(idOrMessage)}</code>.</p>
+        <a class="btn btn--primary" href="#upload">Back to upload</a>
+      </div>
+    </div>
+  `;
+}
+
+function renderResultHeader(v) {
+  return `
+    <header class="result-header">
+      <div class="result-header__meta">
+        <div class="result-header__title-row">
+          <h1 class="result-header__title">Verification result</h1>
+          <code class="result-id" id="result-id">${escapeHtml(v.verificationId)}</code>
+        </div>
+        <dl class="result-header__details">
+          <div class="result-header__field"><dt>Submitted by</dt><dd>${escapeHtml(v.submittedBy || "—")}</dd></div>
+          <div class="result-header__field"><dt>Country</dt><dd>${escapeHtml(v.country || "—")}</dd></div>
+          <div class="result-header__field"><dt>Submitted</dt><dd>${escapeHtml(formatDateTime(v.submittedAt))}</dd></div>
+        </dl>
+      </div>
+      <a class="btn btn--secondary" href="#upload">New verification</a>
+    </header>
+  `;
+}
+
+const VERDICT_MODIFIER = {
+  GENUINE: "genuine",
+  REVIEW: "review",
+  HIGH_RISK: "highrisk",
+  INSUFFICIENT: "insufficient",
+};
+const ESCALATION_DESCRIPTION = {
+  "auto-approve": "Document set cleared for onboarding.",
+  "manual review": "Routed to reviewer for human validation.",
+  "compliance escalation": "Flagged for compliance team review.",
+  "request resubmission": "Operator must request updated documents.",
+};
+
+function renderVerdictPanel(v) {
+  const mod = VERDICT_MODIFIER[v.verdict] || "insufficient";
+  const escLabel = capitalizeFirst(v.escalationAction || "Unknown");
+  const escDesc = ESCALATION_DESCRIPTION[v.escalationAction] || "";
+  const score = (typeof v.riskScore === "number") ? String(v.riskScore) : "—";
+  return `
+    <section class="verdict-panel verdict-panel--${mod}" aria-label="Verdict summary">
+      <div class="verdict-panel__col verdict-panel__col--badge">
+        <span class="verdict-badge verdict-badge--${mod}">${escapeHtml(v.verdict || "INSUFFICIENT")}</span>
+      </div>
+      <div class="verdict-panel__col verdict-panel__col--score">
+        <span class="verdict-score verdict-score--${mod}">${escapeHtml(score)}</span>
+        <span class="verdict-score__label">Risk Score</span>
+        <span class="verdict-score__scale">out of 100</span>
+      </div>
+      <div class="verdict-panel__col verdict-panel__col--escalation">
+        <span class="escalation__label">${escapeHtml(escLabel)}</span>
+        <span class="escalation__desc">${escapeHtml(escDesc)}</span>
+      </div>
+    </section>
+  `;
+}
+
+const PIPELINE_STAGES = ["DOCUMENT_PROCESSING", "CROSS_DOCUMENT", "EXTERNAL", "RISK_SCORING"];
+
+function renderPipelineStrip(v) {
+  const byStage = groupChecksByStage(v);
+  const steps = PIPELINE_STAGES.map((stage) => {
+    const checks = byStage[stage] || [];
+    const failed = checks.filter((c) => !c.passed).length;
+    const ok = checks.length > 0 && failed === 0;
+    return { stage, label: STAGES[stage], ok, total: checks.length, failed };
+  });
+
+  const parts = [];
+  steps.forEach((step, idx) => {
+    if (idx > 0) {
+      const prevOk = steps[idx - 1].ok;
+      const cls = prevOk ? "" : "pipeline-step__connector--fail";
+      parts.push(`<div class="pipeline-step__connector ${cls}" aria-hidden="true"></div>`);
+    }
+    parts.push(`
+      <div class="pipeline-step pipeline-step--${step.ok ? "pass" : "fail"}">
+        <span class="pipeline-step__icon" aria-hidden="true">${step.ok ? svgCheck() : svgWarning()}</span>
+        <span class="pipeline-step__label">${escapeHtml(step.label)}</span>
+        <span class="pipeline-step__sub">${escapeHtml(pipelineStepSummary(step))}</span>
+      </div>
+    `);
+  });
+  return `<section class="pipeline-strip" aria-label="Pipeline progress">${parts.join("")}</section>`;
+}
+
+function pipelineStepSummary(step) {
+  if (step.total === 0) return "No checks run";
+  if (step.failed === 0) return `${step.total}/${step.total} checks passed`;
+  const word = step.total === 1 ? "check" : "checks";
+  return `${step.failed} of ${step.total} ${word} failed`;
+}
+
+function groupChecksByStage(v) {
+  const out = {};
+  for (const doc of v.documents || []) {
+    for (const check of doc.checks || []) {
+      (out[check.stage] = out[check.stage] || []).push(check);
+    }
+  }
+  return out;
+}
+
+function renderDocumentsSection(v) {
+  const docs = v.documents || [];
+  if (docs.length === 0) {
+    return `
+      <section class="documents-section">
+        <h2 class="section-title">Documents</h2>
+        <div class="card"><p class="kv-empty">No documents in this verification.</p></div>
+      </section>
+    `;
+  }
+  return `
+    <section class="documents-section" aria-label="Documents">
+      <h2 class="section-title">Documents</h2>
+      ${docs.map(renderDocumentCard).join("")}
+    </section>
+  `;
+}
+
+const DOC_TYPE_LABELS = {
+  PASSPORT: "Passport",
+  EAD_I766: "Work Permit / EAD",
+  DRIVERS_LICENSE: "Driver's License",
+  RESUME: "Résumé",
+  DEGREE: "Degree",
+  TRANSCRIPT: "Transcript",
+};
+
+function formatDocType(t) {
+  return DOC_TYPE_LABELS[t] || (t ? String(t) : "Document");
+}
+
+function renderDocumentCard(doc) {
+  const typeLabel = formatDocType(doc.documentType);
+  const fields = doc.extractedFields || {};
+  const checks = doc.checks || [];
+  const fieldEntries = Object.entries(fields);
+
+  // INSUFFICIENT edge case: doc couldn't be processed at all.
+  if (fieldEntries.length === 0 && checks.length === 0) {
+    return `
+      <article class="doc-card doc-card--empty">
+        <header class="doc-card__head">
+          <h3 class="doc-card__type">${escapeHtml(typeLabel)}</h3>
+          <code class="doc-card__filename">${escapeHtml(doc.filename || "(no filename)")}</code>
+        </header>
+        <div class="doc-card__empty" role="status">Document could not be processed.</div>
+      </article>
+    `;
+  }
+
+  const passed = checks.filter((c) => c.passed).length;
+  const failed = checks.length - passed;
+  const countLabel = failed === 0 ? `${passed} passed` : `${passed} passed · ${failed} failed`;
+
+  return `
+    <article class="doc-card">
+      <header class="doc-card__head">
+        <h3 class="doc-card__type">${escapeHtml(typeLabel)}</h3>
+        <code class="doc-card__filename">${escapeHtml(doc.filename || "(no filename)")}</code>
+      </header>
+      <div class="doc-card__body">
+        <div class="doc-card__panel">
+          <h4 class="doc-card__subtitle">Extracted fields</h4>
+          ${renderKvList(fieldEntries)}
+        </div>
+        <div class="doc-card__panel">
+          <h4 class="doc-card__subtitle">Checks <span class="doc-card__count">${escapeHtml(countLabel)}</span></h4>
+          ${renderCheckList(checks)}
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderKvList(entries) {
+  if (entries.length === 0) {
+    return `<p class="kv-empty">No fields extracted.</p>`;
+  }
+  return `<dl class="kv-list">${entries.map(renderKvItem).join("")}</dl>`;
+}
+
+function renderKvItem([key, value]) {
+  const isMono = /mrz/i.test(key);
+  return `
+    <div class="kv-item ${isMono ? "kv-item--mono" : ""}">
+      <dt>${escapeHtml(formatFieldName(key))}</dt>
+      <dd>${escapeHtml(formatFieldValue(value))}</dd>
+    </div>
+  `;
+}
+
+function renderCheckList(checks) {
+  if (checks.length === 0) {
+    return `<p class="kv-empty">No checks run on this document.</p>`;
+  }
+  return `<ul class="check-list" role="list">${checks.map(renderCheckItem).join("")}</ul>`;
+}
+
+function renderCheckItem(c) {
+  // Hide confidence label when null/undefined (deterministic checks). Showing
+  // 'null%' or '0%' would be misleading.
+  const hasConfidence = (typeof c.confidence === "number") && !Number.isNaN(c.confidence);
+  const confidenceHtml = hasConfidence
+    ? `<span class="check-item__confidence">${Math.round(c.confidence * 100)}% confidence</span>`
+    : "";
+  const stageBadgeClass = stageBadgeModifier(c.stage);
+  const stageLabel = STAGES[c.stage] || c.stage || "Check";
+  return `
+    <li class="check-item check-item--${c.passed ? "pass" : "fail"}">
+      <span class="check-item__icon" aria-hidden="true">${c.passed ? svgCheck() : svgCross()}</span>
+      <div class="check-item__body">
+        <div class="check-item__head">
+          <span class="check-item__name">${escapeHtml(c.checkName || "Check")}</span>
+          ${confidenceHtml}
+        </div>
+        <p class="check-item__reason">${escapeHtml(c.reason || "No reason provided.")}</p>
+        <span class="stage-badge ${stageBadgeClass}">${escapeHtml(stageLabel)}</span>
+      </div>
+    </li>
+  `;
+}
+
+function stageBadgeModifier(stage) {
+  switch (stage) {
+    case "DOCUMENT_PROCESSING": return "stage-badge--processing";
+    case "CROSS_DOCUMENT":      return "stage-badge--cross";
+    case "EXTERNAL":            return "stage-badge--external";
+    case "RISK_SCORING":        return "stage-badge--risk";
+    default:                    return "";
+  }
+}
+
+function renderAuditLog(v) {
+  const log = v.auditLog || [];
+  if (log.length === 0) {
+    return `
+      <section class="audit-section" aria-label="Audit log">
+        <div class="audit-details audit-details--empty">
+          <div class="audit-summary audit-summary--static">
+            <span class="audit-summary__title">Audit log</span>
+            <span class="audit-summary__count">No entries</span>
+          </div>
+          <p class="audit-empty">No actions recorded yet.</p>
+        </div>
+      </section>
+    `;
+  }
+  const rows = log.map((e) => `
+    <li class="audit-entry">
+      <span class="audit-entry__time">${escapeHtml(formatTime(e.timestamp))}</span>
+      <span class="audit-entry__actor">${escapeHtml(e.actor || "system")}</span>
+      <span class="audit-entry__action">${escapeHtml(e.action || "")}</span>
+    </li>
+  `).join("");
+  return `
+    <section class="audit-section" aria-label="Audit log">
+      <details class="audit-details">
+        <summary class="audit-summary">
+          <span class="audit-summary__title">Audit log</span>
+          <span class="audit-summary__count">${log.length} entries</span>
+          <span class="audit-summary__hint">Click to expand</span>
+        </summary>
+        <ol class="audit-list">${rows}</ol>
+      </details>
+    </section>
+  `;
+}
+
+// ----- Inline status icons (no external assets) ----------------------------
+
+function svgCheck() {
+  return `<svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="7.5" fill="#1E8E5C"/><path d="M4.2 8.4 L6.8 11 L11.8 5.6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+function svgCross() {
+  return `<svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="7.5" fill="#C0392B"/><path d="M5 5 L11 11 M11 5 L5 11" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round"/></svg>`;
+}
+function svgWarning() {
+  return `<svg viewBox="0 0 16 16" width="20" height="20"><path d="M8 1 L15 14 L1 14 Z" fill="#D99A23"/><path d="M8 5.5 L8 9.5" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.8" r="0.9" fill="#FFFFFF"/></svg>`;
+}
+
+// ===========================================================================
 // Helpers — escapeHtml is used by every renderer.
 // ===========================================================================
 
@@ -461,6 +793,69 @@ function escapeHtml(s) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+// "firstName" → "First Name". Special-cased acronyms ('MRZ').
+function formatFieldName(camel) {
+  if (!camel) return "";
+  let out = String(camel)
+    .replace(/([A-Z])/g, " $1")
+    .replace(/^./, (s) => s.toUpperCase())
+    .trim();
+  // Acronyms the regex above downcases: restore them.
+  out = out.replace(/\bMrz\b/g, "MRZ");
+  return out;
+}
+
+function formatFieldValue(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "—";
+    if (typeof value[0] === "object") {
+      // List of objects (e.g. education / employment). Flatten to one line
+      // per object so the kv-list stays readable.
+      return value
+        .map((obj) => Object.entries(obj).map(([k, v]) => `${formatFieldName(k)}: ${v}`).join(", "))
+        .join("; ");
+    }
+    return value.join(", ");
+  }
+  if (typeof value === "object") {
+    return Object.entries(value).map(([k, v]) => `${formatFieldName(k)}: ${v}`).join(", ");
+  }
+  return String(value);
+}
+
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// ISO timestamp → "DD MMM YYYY, HH:MM" in UTC (no timezone juggling for the
+// prototype; backend will return timezone-aware timestamps).
+function formatDateTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const month = MONTH_NAMES[d.getUTCMonth()];
+  const year = d.getUTCFullYear();
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${day} ${month} ${year}, ${hh}:${mm}`;
+}
+
+// ISO timestamp → "HH:MM:SS" for audit log rows (all events are same-day).
+function formatTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  const ss = String(d.getUTCSeconds()).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+
+function capitalizeFirst(s) {
+  if (!s) return "";
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 // Stage labels exported by mockData.js. Re-exposed via STAGES so other
