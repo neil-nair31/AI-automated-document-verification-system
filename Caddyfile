@@ -1,0 +1,24 @@
+# Caddyfile — TLS-terminating reverse proxy in front of the api service.
+#
+# DEPLOY_DOMAIN is read from .env:
+#   - Set DEPLOY_DOMAIN=docverify.example.com to enable automatic Let's
+#     Encrypt TLS. Make sure the domain's A/AAAA records point at this host
+#     BEFORE bringing the stack up, or Caddy will fail to issue the cert.
+#   - Leave it as `:80` (the default) for local HTTP-only testing.
+
+{$DEPLOY_DOMAIN} {
+    encode gzip zstd
+
+    # The FastAPI app is reachable on the internal Docker network only.
+    reverse_proxy api:8000 {
+        header_up X-Real-IP {remote_host}
+    }
+
+    # Quiet down the access log for the healthcheck; keep everything else.
+    @health path /health
+    log {
+        output stderr
+        format json
+    }
+    log_skip @health
+}

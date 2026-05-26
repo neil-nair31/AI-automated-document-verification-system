@@ -1,0 +1,26 @@
+# Development overlay — auto-loaded by `docker compose up` (no -f needed).
+#
+# Purposely NOT used in production: `docker compose -f docker-compose.yml
+# -f docker-compose.prod.yml up` skips override files unless you ask for them.
+#
+# What this adds:
+#   - Source bind-mount into the api container for live editing.
+#   - uvicorn --reload so saved files trigger a worker restart.
+#   - Host ports for both postgres (5432) and api (8000) so local tools can
+#     hit them directly.
+
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+  api:
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
