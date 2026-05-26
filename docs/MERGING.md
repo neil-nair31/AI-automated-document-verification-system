@@ -1,13 +1,17 @@
 # Merging pull requests
 
-This repo had several feature branches opened in parallel from the same initial commit. If you merge them one-by-one onto an empty `main`, later PRs will conflict. Use either **Option A** (recommended) or **Option B**.
+PRs **#1–#4** are merged into `main` (including deployment via a follow-up merge of
+`cursor/deployment-artifacts-8022`). Use this guide for future PRs.
 
-## Option A — Merge the integration PR (recommended)
+This repo previously had several feature branches opened in parallel from the same initial
+commit. If you merge them one-by-one onto an empty `main`, later PRs will conflict.
+Use either **Option A** (single integration branch) or **Option B** (ordered merges).
 
-1. Open the pull request titled **Integrate feature branches into main** (branch `cursor/integrate-branches-400f`).
-2. Review the **Files changed** tab.
+## Option A — One integration branch (recommended for parallel work)
+
+1. Open the PR for your integration branch (e.g. `cursor/integrate-branches-400f`).
+2. Review **Files changed**.
 3. Click **Merge pull request** → **Confirm merge**.
-4. Close the older open/draft PRs (#1–#4) as superseded, or leave them; GitHub will show them as closed once their commits are on `main`.
 
 No special permissions are required beyond **Write** access to the repository.
 
