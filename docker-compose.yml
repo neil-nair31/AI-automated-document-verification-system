@@ -1,15 +1,22 @@
+# Base compose stack — production-safe defaults.
+#
+# This file alone, with `docker-compose.prod.yml` overlaid, is what runs in
+# production. For local development we also auto-load `docker-compose.override.yml`
+# (Compose picks it up by name), which adds the source bind-mount, exposes
+# Postgres on the host, and turns on uvicorn --reload.
+#
+#   dev:   docker compose up --build
+#   prod:  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
 services:
   postgres:
     image: postgres:16-alpine
     container_name: docverify-postgres
-    restart: unless-stopped
     env_file: .env
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -20,20 +27,17 @@ services:
 
   api:
     build: .
+    image: docverify-api:latest
     container_name: docverify-api
-    restart: unless-stopped
     env_file: .env
     depends_on:
       postgres:
         condition: service_healthy
-    ports:
-      - "8000:8000"
     volumes:
-      - .:/app
       - storage:/data/storage
     command: >
       sh -c "alembic upgrade head &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
 volumes:
   pgdata:

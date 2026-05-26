@@ -1,0 +1,80 @@
+# Production overlay.
+#
+# Used like:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Note: `-f` flags must be explicit, otherwise docker compose auto-loads
+# docker-compose.override.yml (the dev overlay) instead of this file.
+#
+# What this adds on top of docker-compose.yml:
+#   * A one-shot 'migrate' service that runs `alembic upgrade head` once per
+#     deploy. The api service then depends on it completing successfully, so
+#     even with multiple api replicas only one process ever runs migrations.
+#   * uvicorn with --workers and --proxy-headers (it's behind Caddy).
+#   * Container healthcheck wired so `docker compose ps` reflects liveness.
+#   * Caddy reverse proxy in front for automatic TLS via Let's Encrypt.
+
+services:
+  postgres:
+    restart: unless-stopped
+
+  migrate:
+    image: docverify-api:latest
+    build: .
+    container_name: docverify-migrate
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  api:
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --workers 4
+      --proxy-headers
+      --forwarded-allow-ips=*
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request,sys; r=urllib.request.urlopen('http://localhost:8000/health',timeout=3); sys.exit(0 if r.status==200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: docverify-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      # Set DEPLOY_DOMAIN=docverify.example.com in .env to enable Let's Encrypt
+      # TLS. Leave it unset (defaults to :80) for HTTP-only local testing.
+      - DEPLOY_DOMAIN=${DEPLOY_DOMAIN:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  caddy_data:
+  caddy_config:

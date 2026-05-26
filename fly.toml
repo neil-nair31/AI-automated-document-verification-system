@@ -1,0 +1,72 @@
+# Fly.io deploy config.
+#
+# First-time setup (run these on your laptop, not in CI):
+#
+#     curl -L https://fly.io/install.sh | sh           # or: brew install flyctl
+#     fly auth login
+#
+#     # Edit `app = "..."` below to a globally-unique name, then:
+#     fly launch --no-deploy --copy-config
+#
+#     # Managed Postgres (Fly's hobby tier is free for small workloads):
+#     fly postgres create --name docverify-db --region iad
+#     fly postgres attach docverify-db                 # injects DATABASE_URL
+#
+#     # App secrets:
+#     fly secrets set JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+#     # (Add OCR/vendor secrets here as they come online.)
+#
+#     # Persistent volume for uploaded files:
+#     fly volumes create storage --size 1 --region iad
+#
+#     fly deploy
+#
+# Subsequent deploys are just:  fly deploy
+#
+# NOTE: change `app = "docverify"` below — Fly app names are globally unique.
+
+app = "docverify"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[deploy]
+  # Runs in a one-shot machine before the new release receives traffic.
+  # Idempotent — Alembic only applies what's missing.
+  release_command = "alembic upgrade head"
+  strategy = "rolling"
+
+[env]
+  APP_ENV = "production"
+  STORAGE_DIR = "/data/storage"
+  # POSTGRES_* are NOT set here — app/config.py reads DATABASE_URL (set by
+  # `fly postgres attach`) and uses it directly.
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 50
+    hard_limit = 100
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/health"
+
+[[mounts]]
+  source = "storage"
+  destination = "/data/storage"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

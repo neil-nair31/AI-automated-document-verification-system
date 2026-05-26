@@ -72,6 +72,12 @@ Key design choices:
 - **All IDs are UUIDs** (`gen_random_uuid()` server-side).
 - **All JSON blobs are `JSONB`** (indexable, queryable).
 
+## Deployment
+
+See **[DEPLOY.md](DEPLOY.md)** for concrete runbooks covering three targets:
+local single-machine, a single VM with Caddy + TLS via the
+`docker-compose.prod.yml` override, and one-command Fly.io.
+
 ## Running the scaffold
 
 ```bash

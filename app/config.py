@@ -9,7 +9,7 @@ them at runtime without a redeploy.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import List
+from typing import List, Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     postgres_db: str = "docverify"
     postgres_host: str = "localhost"
     postgres_port: int = 5432
+
+    # Optional override. Fly.io, Render, Railway, Heroku, and most managed
+    # Postgres providers inject a single DATABASE_URL. When present it wins
+    # over the per-component vars above.
+    database_url_override: Optional[str] = Field(default=None, alias="DATABASE_URL")
 
     api_host: str = "0.0.0.0"
     api_port: int = 8000
@@ -58,6 +63,15 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> str:
+        if self.database_url_override:
+            url = self.database_url_override
+            # Managed providers usually hand back the legacy `postgres://`
+            # scheme. SQLAlchemy 2.x requires the explicit driver form.
+            if url.startswith("postgres://"):
+                url = "postgresql+psycopg2://" + url[len("postgres://"):]
+            elif url.startswith("postgresql://") and "+" not in url.split("://", 1)[0]:
+                url = "postgresql+psycopg2://" + url[len("postgresql://"):]
+            return url
         return (
             f"postgresql+psycopg2://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
