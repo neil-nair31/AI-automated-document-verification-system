@@ -72,11 +72,33 @@ Key design choices:
 - **All IDs are UUIDs** (`gen_random_uuid()` server-side).
 - **All JSON blobs are `JSONB`** (indexable, queryable).
 
+## Pull requests
+
+To merge open work into `main`, see **[docs/MERGING.md](docs/MERGING.md)**. Draft PRs must be
+marked **Ready for review** before GitHub shows **Merge pull request**.
+
 ## Deployment
 
 See **[DEPLOY.md](DEPLOY.md)** for concrete runbooks covering three targets:
 local single-machine, a single VM with Caddy + TLS via the
 `docker-compose.prod.yml` override, and one-command Fly.io.
+
+**Quick start (local):**
+
+```bash
+cp .env.example .env
+docker compose up --build -d
+curl http://localhost:8000/health
+```
+
+**Production (single VM):** set `DEPLOY_DOMAIN` in `.env`, point DNS at the host, then:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+curl -s https://YOUR_DOMAIN/health
+```
+
+**Fly.io:** `fly launch` / `fly deploy` — full steps in [DEPLOY.md](DEPLOY.md).
 
 ## Running the scaffold
 
