@@ -98,7 +98,20 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 curl -s https://YOUR_DOMAIN/health
 ```
 
-**Fly.io:** `fly launch` / `fly deploy` — full steps in [DEPLOY.md](DEPLOY.md).
+**Fly.io (public HTTPS in a few minutes):** install [flyctl](https://fly.io/docs/hands-on/install-flyctl/), then from the repo root:
+
+```bash
+fly auth login
+# Edit fly.toml: change `app = "docverify"` to a name that is globally unique on Fly.
+fly launch --no-deploy --copy-config
+fly postgres create --name YOUR_DB_NAME --region iad
+fly postgres attach YOUR_DB_NAME
+fly secrets set JWT_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+fly volumes create storage --size 1 --region iad
+fly deploy
+```
+
+Then open the URL `fly status` prints and hit `/health`. Custom domains and day-2 ops are in [DEPLOY.md](DEPLOY.md).
 
 ## Running the scaffold
 
