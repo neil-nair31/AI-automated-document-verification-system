@@ -22,7 +22,7 @@ import { entraUsers, countryRules, verifications } from "./mockData.js";
 // TODO: replace mock with real fetch() calls when backend is ready
 const USE_MOCK_AUTH = true;
 const ENTRA_CONFIG = { tenantId: "", clientId: "", redirectUri: "", authority: "" };
-const API_BASE_URL = ""; // e.g. http://localhost:8000 once backend is up
+const API_BASE_URL = "http://localhost:8000";
 
 // 300ms artificial latency — gives the UI realistic loading states.
 const MOCK_LATENCY_MS = 300;
@@ -44,10 +44,38 @@ let currentSession = null; // { user: {email, displayName, role}, accessToken }
  *                                        return. Ignored by the real flow.
  * @returns {Promise<{email, displayName, role}>}
  */
+/**
+ * loginWithPassword(email, password)
+ *
+ *   Real backend (phase 2): POST /auth/login with email + password.
+ *   Set USE_MOCK_AUTH = false and call this from the login UI when Entra is not wired.
+ */
+export async function loginWithPassword(email, password) {
+  const response = await fetch(`${API_BASE_URL}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!response.ok) {
+    const detail = (await response.json().catch(() => ({}))).detail;
+    throw new Error(detail || `Login failed (${response.status})`);
+  }
+  const body = await response.json();
+  currentSession = {
+    user: {
+      email: body.user.email,
+      displayName: body.user.email.split("@")[0],
+      role: body.user.role,
+    },
+    accessToken: body.access_token,
+  };
+  return currentSession.user;
+}
+
 export async function loginWithEntra(roleHint) {
-  // TODO: replace with fetch(`${API_BASE_URL}/auth/login`) once Entra is wired
+  // TODO: replace with Entra MSAL once configured; until then use loginWithPassword.
   if (!USE_MOCK_AUTH) {
-    throw new Error("Real Entra flow is not yet wired — see ENTRA_CONFIG.");
+    throw new Error("Entra is not wired — use loginWithPassword() or set USE_MOCK_AUTH = true.");
   }
   await sleep(MOCK_LATENCY_MS);
 

@@ -1,5 +1,5 @@
-"""Pydantic request/response schemas.
+"""Pydantic request/response models."""
 
-Populated in the API-routes phase. Kept as an empty package now so imports
-elsewhere (and IDE autocomplete) resolve cleanly.
-"""
+from app.schemas.auth import LoginRequest, TokenResponse, UserPublic
+
+__all__ = ["LoginRequest", "TokenResponse", "UserPublic"]

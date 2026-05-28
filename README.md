@@ -6,17 +6,17 @@ with two roles (ADMIN, OPERATOR). MVP prototype — no paid vendor dependencies;
 external sources (USCIS, E-Verify, NSC) are wired behind mockable adapter
 interfaces so real integrations can be slotted in later.
 
-> **Status: scaffold phase.** Project structure, data models, Alembic
-> migration, and the `/health` endpoint are in place. Auth, the 5-stage
-> verification pipeline, the full API surface, seed data, tests, and the
-> frontend will be added in subsequent phases — see [Roadmap](#roadmap).
+> **Status: phase 2 (auth) complete.** JWT login, password hashing, RBAC
+> dependencies, and default user seeding are in place. The 5-stage verification
+> pipeline, `/verifications` / `/rules` routes, full seed data, and frontend API
+> wiring are still upcoming — see [Roadmap](#roadmap).
 
 ## Project layout
 
 ```
 .
 ├── app/
-│   ├── main.py                # FastAPI app factory (currently wires /health only)
+│   ├── main.py                # FastAPI app factory (/health, /auth, admin RBAC smoke test)
 │   ├── config.py              # Settings via pydantic-settings (env / .env)
 │   ├── database.py            # SQLAlchemy engine, SessionLocal, Base, get_db
 │   ├── enums.py               # Role, DocumentType, Verdict, RiskLevel, PipelineStage, ...
@@ -29,10 +29,11 @@ interfaces so real integrations can be slotted in later.
 │   │   └── audit.py           #   AuditLog (immutable, append-only)
 │   ├── schemas/               # Pydantic request/response models — next phase
 │   ├── routers/               # FastAPI route modules
-│   │   └── health.py          #   /health (DB roundtrip)
+│   │   ├── health.py          #   /health (DB roundtrip)
+│   │   └── auth.py            #   /auth/login, /auth/me
 │   ├── pipeline/              # 5-stage engine — pipeline phase
 │   ├── adapters/              # External-source adapters (USCIS/E-Verify/NSC mocks)
-│   ├── core/                  # Auth, JWT, RBAC dependency guards
+│   ├── core/                  # JWT, password hashing, RBAC dependencies (phase 2)
 │   └── storage/               # File storage helpers
 ├── alembic/
 │   ├── env.py
@@ -139,11 +140,17 @@ uvicorn app.main:app --reload
 | Phase | Scope                                                                                             | Status |
 |-------|---------------------------------------------------------------------------------------------------|--------|
 | 1     | Project structure, models, migrations, docker, `/health`                                          | **done** |
-| 2     | Auth: `POST /auth/login`, password hashing, JWT issue/verify, RBAC dependency guards              | next |
+| 2     | Auth: `POST /auth/login`, password hashing, JWT issue/verify, RBAC dependency guards              | **done** |
 | 3     | Pipeline stage modules: extraction, internal consistency, cross-document, external, risk verdict  | pending |
 | 4     | API routes: `/verifications` (create + get + audit), `/rules` (get + put, ADMIN-only)             | pending |
-| 5     | Seed data: ADMIN + OPERATOR users, rule configs for two countries, adapter fixtures               | pending |
-| 6     | Tests: pipeline unit tests, RBAC tests, end-to-end happy-path                                     | pending |
+| 5     | Seed data: country rules + adapter fixtures (users seeded in phase 2)                             | partial |
+| 6     | Tests: pipeline unit tests, RBAC tests, end-to-end happy-path                                     | partial (auth) |
 | 7     | Frontend: vanilla HTML/JS login + upload + verdict view                                           | pending |
 
-— Pausing here for review before phase 2, as requested.
+### Auth quick test (after `alembic upgrade head` and `python -m seeds.seed_users`)
+
+```bash
+curl -s -X POST http://localhost:8000/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"operator@rts.com","password":"changeme-dev-only"}' | jq .
+```
